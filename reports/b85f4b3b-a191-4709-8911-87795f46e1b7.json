@@ -1,0 +1,207 @@
+{
+  "summary": {
+    "runId": "b85f4b3b-a191-4709-8911-87795f46e1b7",
+    "url": "HTTPS://staging.autoqa.app/login",
+    "appName": "AutoQA Target",
+    "moduleName": "Default Flow",
+    "title": "AutoQA Target - Default Flow",
+    "timestamp": "2026-05-31T09:46:33.112Z",
+    "totalSteps": 10,
+    "passedSteps": 0,
+    "failedSteps": 1,
+    "durationMs": 1957,
+    "status": "failed"
+  },
+  "details": {
+    "runId": "b85f4b3b-a191-4709-8911-87795f46e1b7",
+    "url": "HTTPS://staging.autoqa.app/login",
+    "appName": "AutoQA Target",
+    "moduleName": "Default Flow",
+    "status": "failed",
+    "startTime": "2026-05-31T09:46:31.155Z",
+    "locatorMap": {
+      "TC01: User Authentication Success": {
+        "selector": "[name=\"TC01: User Authentication Success\"], #TC01: User Authentication Success, .TC01: User Authentication Success, input[type=\"text\"]",
+        "score": 10,
+        "strategy": "fallback",
+        "tagName": "input",
+        "attributes": {}
+      }
+    },
+    "stepResults": [
+      {
+        "stepIndex": 1,
+        "step": {
+          "stepIndex": 1,
+          "rawText": "TC01: User Authentication Success",
+          "type": "action",
+          "action": "click",
+          "targetField": "TC01: User Authentication Success"
+        },
+        "status": "failed",
+        "durationMs": 581,
+        "logs": [
+          "Starting step execution: TC01: User Authentication Success",
+          "Scanning live DOM for clickable element matching phrase: \"TC01: User Authentication Success\"",
+          "Discovery engine resolved locator selector: \"[name=\"TC01: User Authentication Success\"], #TC01: User Authentication Success, .TC01: User Authentication Success, input[type=\"text\"]\" using scoring strategy: [fallback]",
+          "ERROR: locator.click: Unexpected token \" \" while parsing css selector \"[name=\"TC01: User Authentication Success\"], #TC01: User Authentication Success, .TC01: User Authentication Success, input[type=\"text\"]\". Did you mean to CSS.escape it?\nCall log:\n\u001b[2m  - waiting for [name=\"TC01: User Authentication Success\"], #TC01: User Authentication Success, .TC01: User Authentication Success, input[type=\"text\"] >> nth=0\u001b[22m\n"
+        ],
+        "resolvedSelector": "[name=\"TC01: User Authentication Success\"], #TC01: User Authentication Success, .TC01: User Authentication Success, input[type=\"text\"]",
+        "error": "locator.click: Unexpected token \" \" while parsing css selector \"[name=\"TC01: User Authentication Success\"], #TC01: User Authentication Success, .TC01: User Authentication Success, input[type=\"text\"]\". Did you mean to CSS.escape it?\nCall log:\n\u001b[2m  - waiting for [name=\"TC01: User Authentication Success\"], #TC01: User Authentication Success, .TC01: User Authentication Success, input[type=\"text\"] >> nth=0\u001b[22m\n",
+        "screenshotPath": "/screenshots/run-b85f4b3b-a191-4709-8911-87795f46e1b7-step-1.png"
+      },
+      {
+        "stepIndex": 2,
+        "step": {
+          "stepIndex": 2,
+          "rawText": "Step 1: Navigate to the login page.",
+          "type": "action",
+          "action": "navigate",
+          "targetField": "url",
+          "value": "the"
+        },
+        "status": "skipped",
+        "durationMs": 0,
+        "logs": [
+          "Starting step execution: Step 1: Navigate to the login page.",
+          "Skipped due to previous step failure."
+        ]
+      },
+      {
+        "stepIndex": 3,
+        "step": {
+          "stepIndex": 3,
+          "rawText": "Step 2: Enter \"jay.r@optevo.com\" into the username field.",
+          "type": "action",
+          "action": "fill",
+          "targetField": "username field.",
+          "value": "jay.r@optevo.com"
+        },
+        "status": "skipped",
+        "durationMs": 0,
+        "logs": [
+          "Starting step execution: Step 2: Enter \"jay.r@optevo.com\" into the username field.",
+          "Skipped due to previous step failure."
+        ]
+      },
+      {
+        "stepIndex": 4,
+        "step": {
+          "stepIndex": 4,
+          "rawText": "Step 3: Enter \"Jayqa@1234\" into the password field.",
+          "type": "action",
+          "action": "fill",
+          "targetField": "password field.",
+          "value": "Jayqa@1234"
+        },
+        "status": "skipped",
+        "durationMs": 0,
+        "logs": [
+          "Starting step execution: Step 3: Enter \"Jayqa@1234\" into the password field.",
+          "Skipped due to previous step failure."
+        ]
+      },
+      {
+        "stepIndex": 5,
+        "step": {
+          "stepIndex": 5,
+          "rawText": "Step 4: Click the \"Log In\" button.",
+          "type": "action",
+          "action": "click",
+          "targetField": "Log In"
+        },
+        "status": "skipped",
+        "durationMs": 0,
+        "logs": [
+          "Starting step execution: Step 4: Click the \"Log In\" button.",
+          "Skipped due to previous step failure."
+        ]
+      },
+      {
+        "stepIndex": 6,
+        "step": {
+          "stepIndex": 6,
+          "rawText": "Expected Result: The dashboard should be navigate https://stage.optevo.com/desktop/home",
+          "type": "action",
+          "action": "click",
+          "targetField": "Expected Result: The dashboard should be navigate https://stage.optevo.com/desktop/home"
+        },
+        "status": "skipped",
+        "durationMs": 0,
+        "logs": [
+          "Starting step execution: Expected Result: The dashboard should be navigate https://stage.optevo.com/desktop/home",
+          "Skipped due to previous step failure."
+        ]
+      },
+      {
+        "stepIndex": 7,
+        "step": {
+          "stepIndex": 7,
+          "rawText": "It should display an Optevo text logo on left top side and Ask Evo AI button text on navbar",
+          "type": "action",
+          "action": "click",
+          "targetField": "It should display an Optevo text logo on left top side and Ask Evo AI button text on navbar"
+        },
+        "status": "skipped",
+        "durationMs": 0,
+        "logs": [
+          "Starting step execution: It should display an Optevo text logo on left top side and Ask Evo AI button text on navbar",
+          "Skipped due to previous step failure."
+        ]
+      },
+      {
+        "stepIndex": 8,
+        "step": {
+          "stepIndex": 8,
+          "rawText": "TC02: Invalid Login Error Handling",
+          "type": "action",
+          "action": "click",
+          "targetField": "TC02: Invalid Login Error Handling"
+        },
+        "status": "skipped",
+        "durationMs": 0,
+        "logs": [
+          "Starting step execution: TC02: Invalid Login Error Handling",
+          "Skipped due to previous step failure."
+        ]
+      },
+      {
+        "stepIndex": 9,
+        "step": {
+          "stepIndex": 9,
+          "rawText": "Step 1: Enter invalid credentials.",
+          "type": "action",
+          "action": "click",
+          "targetField": "Enter invalid credentials."
+        },
+        "status": "skipped",
+        "durationMs": 0,
+        "logs": [
+          "Starting step execution: Step 1: Enter invalid credentials.",
+          "Skipped due to previous step failure."
+        ]
+      },
+      {
+        "stepIndex": 10,
+        "step": {
+          "stepIndex": 10,
+          "rawText": "Expected Result: Error message \"Log In Error Incorrect Email\" is displayed when user enters invalid email and password\" displayed in red.",
+          "type": "action",
+          "action": "click",
+          "targetField": "Expected Result: Error message \"Log In Error Incorrect Email\" is displayed when user enters invalid email and password\" displayed in red."
+        },
+        "status": "skipped",
+        "durationMs": 0,
+        "logs": [
+          "Starting step execution: Expected Result: Error message \"Log In Error Incorrect Email\" is displayed when user enters invalid email and password\" displayed in red.",
+          "Skipped due to previous step failure."
+        ]
+      }
+    ],
+    "consoleLogs": [],
+    "networkErrors": [],
+    "endTime": "2026-05-31T09:46:33.112Z",
+    "durationMs": 1957,
+    "generatedScriptPath": "/generated-tests/test_staging_autoqa_app_login_b85f4b3b.spec.ts"
+  }
+}

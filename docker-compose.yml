@@ -1,0 +1,19 @@
+version: '3.8'
+
+services:
+  autoqa:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    ports:
+      - "3000:3000"
+    environment:
+      - NODE_ENV=production
+    volumes:
+      - ./screenshots:/app/screenshots
+      - ./reports:/app/reports
+      - ./generated-tests:/app/generated-tests
+      - ./logs:/app/logs
+      - ./videos:/app/videos
+      - ./test-runs:/app/test-runs
+    restart: always

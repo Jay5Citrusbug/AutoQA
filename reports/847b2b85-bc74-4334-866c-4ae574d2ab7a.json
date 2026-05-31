@@ -1,0 +1,387 @@
+{
+  "summary": {
+    "runId": "847b2b85-bc74-4334-866c-4ae574d2ab7a",
+    "url": "https://stage.optevo.com/login",
+    "appName": "AutoQA Target",
+    "moduleName": "Default Flow",
+    "title": "AutoQA Target - Default Flow",
+    "timestamp": "2026-05-31T10:24:35.346Z",
+    "totalSteps": 8,
+    "passedSteps": 5,
+    "failedSteps": 3,
+    "durationMs": 153014,
+    "status": "failed"
+  },
+  "details": {
+    "runId": "847b2b85-bc74-4334-866c-4ae574d2ab7a",
+    "url": "https://stage.optevo.com/login",
+    "appName": "AutoQA Target",
+    "moduleName": "Default Flow",
+    "browser": "chromium",
+    "deviceMode": "desktop",
+    "status": "failed",
+    "startTime": "2026-05-31T10:22:02.332Z",
+    "locatorMap": {},
+    "stepResults": [
+      {
+        "stepIndex": 2,
+        "step": {
+          "stepIndex": 2,
+          "rawText": "Step 1: Navigate to the login page.",
+          "type": "action",
+          "action": "navigate",
+          "targetField": "url",
+          "value": "login page."
+        },
+        "status": "passed",
+        "durationMs": 7946,
+        "logs": [
+          "Starting step: Step 1: Navigate to the login page.",
+          "Navigating to: \"https://stage.optevo.com/login\"",
+          "Screenshot saved: /screenshots/run-847b2b85-bc74-4334-866c-4ae574d2ab7a-TC01-step-2.png"
+        ],
+        "screenshotPath": "/screenshots/run-847b2b85-bc74-4334-866c-4ae574d2ab7a-TC01-step-2.png"
+      },
+      {
+        "stepIndex": 4,
+        "step": {
+          "stepIndex": 4,
+          "rawText": "Step 2: Enter \"jay.r@optevo.com\" into the email field.",
+          "type": "action",
+          "action": "fill",
+          "targetField": "email",
+          "value": "jay.r@optevo.com"
+        },
+        "status": "passed",
+        "durationMs": 216,
+        "logs": [
+          "Starting step: Step 2: Enter \"jay.r@optevo.com\" into the email field.",
+          "Scanning DOM for input: \"email\"",
+          "Resolved: \"input[name=\"userName\"]\" (85%)",
+          "Filled \"jay.r@optevo.com\" into element",
+          "Screenshot saved: /screenshots/run-847b2b85-bc74-4334-866c-4ae574d2ab7a-TC01-step-4.png"
+        ],
+        "resolvedSelector": "input[name=\"userName\"]",
+        "screenshotPath": "/screenshots/run-847b2b85-bc74-4334-866c-4ae574d2ab7a-TC01-step-4.png"
+      },
+      {
+        "stepIndex": 6,
+        "step": {
+          "stepIndex": 6,
+          "rawText": "Step 3: Enter \"Jayqa@1234\" into the password field.",
+          "type": "action",
+          "action": "fill",
+          "targetField": "password",
+          "value": "Jayqa@1234"
+        },
+        "status": "passed",
+        "durationMs": 190,
+        "logs": [
+          "Starting step: Step 3: Enter \"Jayqa@1234\" into the password field.",
+          "Scanning DOM for input: \"password\"",
+          "Resolved: \"input[name=\"password\"]\" (90%)",
+          "Filled \"Jayqa@1234\" into element",
+          "Screenshot saved: /screenshots/run-847b2b85-bc74-4334-866c-4ae574d2ab7a-TC01-step-6.png"
+        ],
+        "resolvedSelector": "input[name=\"password\"]",
+        "screenshotPath": "/screenshots/run-847b2b85-bc74-4334-866c-4ae574d2ab7a-TC01-step-6.png"
+      },
+      {
+        "stepIndex": 8,
+        "step": {
+          "stepIndex": 8,
+          "rawText": "Step 4: Click the \"Log In\" button.",
+          "type": "action",
+          "action": "click",
+          "targetField": "Log In"
+        },
+        "status": "passed",
+        "durationMs": 320,
+        "logs": [
+          "Starting step: Step 4: Click the \"Log In\" button.",
+          "Scanning DOM for clickable: \"Log In\"",
+          "Resolved: \"form#wf-form-Starter-Account > button\" (95%)",
+          "Clicked element",
+          "Waiting for page to settle after click...",
+          "Page network settled.",
+          "Screenshot saved: /screenshots/run-847b2b85-bc74-4334-866c-4ae574d2ab7a-TC01-step-8.png"
+        ],
+        "resolvedSelector": "form#wf-form-Starter-Account > button",
+        "screenshotPath": "/screenshots/run-847b2b85-bc74-4334-866c-4ae574d2ab7a-TC01-step-8.png"
+      },
+      {
+        "stepIndex": 10,
+        "step": {
+          "stepIndex": 10,
+          "rawText": "Expected Result: The dashboard should be navigate https://stage.optevo.com/desktop/home",
+          "type": "validation",
+          "validation": "url",
+          "targetField": "url",
+          "value": "https://stage.optevo.com/desktop/home"
+        },
+        "status": "passed",
+        "durationMs": 5473,
+        "logs": [
+          "Starting step: Expected Result: The dashboard should be navigate https://stage.optevo.com/desktop/home",
+          "Running validation: [url] target=\"url\" value=\"https://stage.optevo.com/desktop/home\"",
+          "Validation passed.",
+          "Screenshot saved: /screenshots/run-847b2b85-bc74-4334-866c-4ae574d2ab7a-TC01-step-10.png"
+        ],
+        "screenshotPath": "/screenshots/run-847b2b85-bc74-4334-866c-4ae574d2ab7a-TC01-step-10.png"
+      },
+      {
+        "stepIndex": 12,
+        "step": {
+          "stepIndex": 12,
+          "rawText": "It should display an Optevo text logo on left top side and Ask Evo AI button text on navbar",
+          "type": "validation",
+          "validation": "text",
+          "targetField": "body",
+          "value": "Optevo"
+        },
+        "status": "failed",
+        "durationMs": 120993,
+        "logs": [
+          "Starting step: It should display an Optevo text logo on left top side and Ask Evo AI button text on navbar",
+          "Running validation: [text] target=\"body\" value=\"Optevo\"",
+          "ERROR: Text validation failed after 120s. Expected page to contain \"Optevo\". Last page content preview: \"chevron_left\nMS DB STAGE\nexpand_more\nAsk Evo AI\nvolume_up\nJR\nMAIN MENU\nWorkHub\nActivity Feed\nWorkPods\nTasks\nMyDrive\nFavorites\nIdeas\nDirect Messages\nQuick Notes\nQUICK ACTIONS\nNew Group\nNew Direct Messa...\""
+        ],
+        "error": "Text validation failed after 120s. Expected page to contain \"Optevo\". Last page content preview: \"chevron_left\nMS DB STAGE\nexpand_more\nAsk Evo AI\nvolume_up\nJR\nMAIN MENU\nWorkHub\nActivity Feed\nWorkPods\nTasks\nMyDrive\nFavorites\nIdeas\nDirect Messages\nQuick Notes\nQUICK ACTIONS\nNew Group\nNew Direct Messa...\"",
+        "screenshotPath": "/screenshots/run-847b2b85-bc74-4334-866c-4ae574d2ab7a-TC01-step-12.png"
+      },
+      {
+        "stepIndex": 2,
+        "step": {
+          "stepIndex": 2,
+          "rawText": "Step 1: Enter invalid credentials.",
+          "type": "action",
+          "action": "fill",
+          "targetField": "credentials",
+          "value": "invalid"
+        },
+        "status": "failed",
+        "durationMs": 30508,
+        "logs": [
+          "Starting step: Step 1: Enter invalid credentials.",
+          "Scanning DOM for credential fields",
+          "Resolved: username=[[name=\"username\"], #username, .username, input[type=\"text\"]], password=[[name=\"password\"], #password, .password, input[type=\"text\"]]",
+          "ERROR: locator.fill: Timeout 30000ms exceeded.\nCall log:\n\u001b[2m  - waiting for locator('[name=\"username\"], #username, .username, input[type=\"text\"]').first()\u001b[22m\n"
+        ],
+        "resolvedSelector": "[name=\"username\"], #username, .username, input[type=\"text\"] & [name=\"password\"], #password, .password, input[type=\"text\"]",
+        "error": "locator.fill: Timeout 30000ms exceeded.\nCall log:\n\u001b[2m  - waiting for locator('[name=\"username\"], #username, .username, input[type=\"text\"]').first()\u001b[22m\n",
+        "screenshotPath": "/screenshots/run-847b2b85-bc74-4334-866c-4ae574d2ab7a-TC02-step-2.png"
+      },
+      {
+        "stepIndex": 4,
+        "step": {
+          "stepIndex": 4,
+          "rawText": "Expected Result: Error message \"Log In Error Incorrect Email\" is displayed when user enters invalid email and password\" displayed in red.",
+          "type": "validation",
+          "validation": "text",
+          "targetField": "body",
+          "value": "Log In Error Incorrect Email"
+        },
+        "status": "failed",
+        "durationMs": 120781,
+        "logs": [
+          "Starting step: Expected Result: Error message \"Log In Error Incorrect Email\" is displayed when user enters invalid email and password\" displayed in red.",
+          "Running validation: [text] target=\"body\" value=\"Log In Error Incorrect Email\"",
+          "ERROR: Text validation failed after 120s. Expected page to contain \"Log In Error Incorrect Email\". Last page content preview: \"...\""
+        ],
+        "error": "Text validation failed after 120s. Expected page to contain \"Log In Error Incorrect Email\". Last page content preview: \"...\""
+      }
+    ],
+    "consoleLogs": [],
+    "networkErrors": [],
+    "testSuiteResults": [
+      {
+        "tcId": "TC01",
+        "title": "TC01: User Authentication Success",
+        "status": "failed",
+        "durationMs": 137154,
+        "stepResults": [
+          {
+            "stepIndex": 2,
+            "step": {
+              "stepIndex": 2,
+              "rawText": "Step 1: Navigate to the login page.",
+              "type": "action",
+              "action": "navigate",
+              "targetField": "url",
+              "value": "login page."
+            },
+            "status": "passed",
+            "durationMs": 7946,
+            "logs": [
+              "Starting step: Step 1: Navigate to the login page.",
+              "Navigating to: \"https://stage.optevo.com/login\"",
+              "Screenshot saved: /screenshots/run-847b2b85-bc74-4334-866c-4ae574d2ab7a-TC01-step-2.png"
+            ],
+            "screenshotPath": "/screenshots/run-847b2b85-bc74-4334-866c-4ae574d2ab7a-TC01-step-2.png"
+          },
+          {
+            "stepIndex": 4,
+            "step": {
+              "stepIndex": 4,
+              "rawText": "Step 2: Enter \"jay.r@optevo.com\" into the email field.",
+              "type": "action",
+              "action": "fill",
+              "targetField": "email",
+              "value": "jay.r@optevo.com"
+            },
+            "status": "passed",
+            "durationMs": 216,
+            "logs": [
+              "Starting step: Step 2: Enter \"jay.r@optevo.com\" into the email field.",
+              "Scanning DOM for input: \"email\"",
+              "Resolved: \"input[name=\"userName\"]\" (85%)",
+              "Filled \"jay.r@optevo.com\" into element",
+              "Screenshot saved: /screenshots/run-847b2b85-bc74-4334-866c-4ae574d2ab7a-TC01-step-4.png"
+            ],
+            "resolvedSelector": "input[name=\"userName\"]",
+            "screenshotPath": "/screenshots/run-847b2b85-bc74-4334-866c-4ae574d2ab7a-TC01-step-4.png"
+          },
+          {
+            "stepIndex": 6,
+            "step": {
+              "stepIndex": 6,
+              "rawText": "Step 3: Enter \"Jayqa@1234\" into the password field.",
+              "type": "action",
+              "action": "fill",
+              "targetField": "password",
+              "value": "Jayqa@1234"
+            },
+            "status": "passed",
+            "durationMs": 190,
+            "logs": [
+              "Starting step: Step 3: Enter \"Jayqa@1234\" into the password field.",
+              "Scanning DOM for input: \"password\"",
+              "Resolved: \"input[name=\"password\"]\" (90%)",
+              "Filled \"Jayqa@1234\" into element",
+              "Screenshot saved: /screenshots/run-847b2b85-bc74-4334-866c-4ae574d2ab7a-TC01-step-6.png"
+            ],
+            "resolvedSelector": "input[name=\"password\"]",
+            "screenshotPath": "/screenshots/run-847b2b85-bc74-4334-866c-4ae574d2ab7a-TC01-step-6.png"
+          },
+          {
+            "stepIndex": 8,
+            "step": {
+              "stepIndex": 8,
+              "rawText": "Step 4: Click the \"Log In\" button.",
+              "type": "action",
+              "action": "click",
+              "targetField": "Log In"
+            },
+            "status": "passed",
+            "durationMs": 320,
+            "logs": [
+              "Starting step: Step 4: Click the \"Log In\" button.",
+              "Scanning DOM for clickable: \"Log In\"",
+              "Resolved: \"form#wf-form-Starter-Account > button\" (95%)",
+              "Clicked element",
+              "Waiting for page to settle after click...",
+              "Page network settled.",
+              "Screenshot saved: /screenshots/run-847b2b85-bc74-4334-866c-4ae574d2ab7a-TC01-step-8.png"
+            ],
+            "resolvedSelector": "form#wf-form-Starter-Account > button",
+            "screenshotPath": "/screenshots/run-847b2b85-bc74-4334-866c-4ae574d2ab7a-TC01-step-8.png"
+          },
+          {
+            "stepIndex": 10,
+            "step": {
+              "stepIndex": 10,
+              "rawText": "Expected Result: The dashboard should be navigate https://stage.optevo.com/desktop/home",
+              "type": "validation",
+              "validation": "url",
+              "targetField": "url",
+              "value": "https://stage.optevo.com/desktop/home"
+            },
+            "status": "passed",
+            "durationMs": 5473,
+            "logs": [
+              "Starting step: Expected Result: The dashboard should be navigate https://stage.optevo.com/desktop/home",
+              "Running validation: [url] target=\"url\" value=\"https://stage.optevo.com/desktop/home\"",
+              "Validation passed.",
+              "Screenshot saved: /screenshots/run-847b2b85-bc74-4334-866c-4ae574d2ab7a-TC01-step-10.png"
+            ],
+            "screenshotPath": "/screenshots/run-847b2b85-bc74-4334-866c-4ae574d2ab7a-TC01-step-10.png"
+          },
+          {
+            "stepIndex": 12,
+            "step": {
+              "stepIndex": 12,
+              "rawText": "It should display an Optevo text logo on left top side and Ask Evo AI button text on navbar",
+              "type": "validation",
+              "validation": "text",
+              "targetField": "body",
+              "value": "Optevo"
+            },
+            "status": "failed",
+            "durationMs": 120993,
+            "logs": [
+              "Starting step: It should display an Optevo text logo on left top side and Ask Evo AI button text on navbar",
+              "Running validation: [text] target=\"body\" value=\"Optevo\"",
+              "ERROR: Text validation failed after 120s. Expected page to contain \"Optevo\". Last page content preview: \"chevron_left\nMS DB STAGE\nexpand_more\nAsk Evo AI\nvolume_up\nJR\nMAIN MENU\nWorkHub\nActivity Feed\nWorkPods\nTasks\nMyDrive\nFavorites\nIdeas\nDirect Messages\nQuick Notes\nQUICK ACTIONS\nNew Group\nNew Direct Messa...\""
+            ],
+            "error": "Text validation failed after 120s. Expected page to contain \"Optevo\". Last page content preview: \"chevron_left\nMS DB STAGE\nexpand_more\nAsk Evo AI\nvolume_up\nJR\nMAIN MENU\nWorkHub\nActivity Feed\nWorkPods\nTasks\nMyDrive\nFavorites\nIdeas\nDirect Messages\nQuick Notes\nQUICK ACTIONS\nNew Group\nNew Direct Messa...\"",
+            "screenshotPath": "/screenshots/run-847b2b85-bc74-4334-866c-4ae574d2ab7a-TC01-step-12.png"
+          }
+        ],
+        "generatedScriptPath": "/generated-tests/test_stage_optevo_com_login_tc01_847b2b85.spec.ts"
+      },
+      {
+        "tcId": "TC02",
+        "title": "TC02: Invalid Login Error Handling",
+        "status": "failed",
+        "durationMs": 153005,
+        "stepResults": [
+          {
+            "stepIndex": 2,
+            "step": {
+              "stepIndex": 2,
+              "rawText": "Step 1: Enter invalid credentials.",
+              "type": "action",
+              "action": "fill",
+              "targetField": "credentials",
+              "value": "invalid"
+            },
+            "status": "failed",
+            "durationMs": 30508,
+            "logs": [
+              "Starting step: Step 1: Enter invalid credentials.",
+              "Scanning DOM for credential fields",
+              "Resolved: username=[[name=\"username\"], #username, .username, input[type=\"text\"]], password=[[name=\"password\"], #password, .password, input[type=\"text\"]]",
+              "ERROR: locator.fill: Timeout 30000ms exceeded.\nCall log:\n\u001b[2m  - waiting for locator('[name=\"username\"], #username, .username, input[type=\"text\"]').first()\u001b[22m\n"
+            ],
+            "resolvedSelector": "[name=\"username\"], #username, .username, input[type=\"text\"] & [name=\"password\"], #password, .password, input[type=\"text\"]",
+            "error": "locator.fill: Timeout 30000ms exceeded.\nCall log:\n\u001b[2m  - waiting for locator('[name=\"username\"], #username, .username, input[type=\"text\"]').first()\u001b[22m\n",
+            "screenshotPath": "/screenshots/run-847b2b85-bc74-4334-866c-4ae574d2ab7a-TC02-step-2.png"
+          },
+          {
+            "stepIndex": 4,
+            "step": {
+              "stepIndex": 4,
+              "rawText": "Expected Result: Error message \"Log In Error Incorrect Email\" is displayed when user enters invalid email and password\" displayed in red.",
+              "type": "validation",
+              "validation": "text",
+              "targetField": "body",
+              "value": "Log In Error Incorrect Email"
+            },
+            "status": "failed",
+            "durationMs": 120781,
+            "logs": [
+              "Starting step: Expected Result: Error message \"Log In Error Incorrect Email\" is displayed when user enters invalid email and password\" displayed in red.",
+              "Running validation: [text] target=\"body\" value=\"Log In Error Incorrect Email\"",
+              "ERROR: Text validation failed after 120s. Expected page to contain \"Log In Error Incorrect Email\". Last page content preview: \"...\""
+            ],
+            "error": "Text validation failed after 120s. Expected page to contain \"Log In Error Incorrect Email\". Last page content preview: \"...\""
+          }
+        ],
+        "generatedScriptPath": "/generated-tests/test_stage_optevo_com_login_tc02_847b2b85.spec.ts"
+      }
+    ],
+    "endTime": "2026-05-31T10:24:35.346Z",
+    "durationMs": 153014,
+    "generatedScriptPath": "/generated-tests/test_stage_optevo_com_login_tc01_847b2b85.spec.ts"
+  }
+}

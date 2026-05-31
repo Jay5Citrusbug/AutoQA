@@ -1,0 +1,106 @@
+@import "tailwindcss";
+
+:root {
+  --background: #090d16;
+  --foreground: #f9fafb;
+  --card: #101524;
+  --card-foreground: #f9fafb;
+  --popover: #101524;
+  --popover-foreground: #f9fafb;
+  --primary: #3b82f6;
+  --primary-foreground: #ffffff;
+  --secondary: #1c253c;
+  --secondary-foreground: #f9fafb;
+  --muted: #0d111d;
+  --muted-foreground: #64748b;
+  --accent: #1e293b;
+  --accent-foreground: #f9fafb;
+  --destructive: #ef4444;
+  --destructive-foreground: #ffffff;
+  --border: #1c253c;
+  --input: #0d111d;
+  --ring: #60a5fa;
+}
+
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-secondary: var(--secondary);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-border: var(--border);
+  --color-input: var(--input);
+  --color-ring: var(--ring);
+}
+
+body {
+  background-color: var(--background);
+  color: var(--foreground);
+  font-feature-settings: "cv02", "cv03", "cv04", "cv11";
+  font-family: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+}
+
+/* Premium high-contrast custom scrollbars with Firefox support */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: #3b82f6 #090d16;
+}
+
+/* Custom Scrollbars to match dark theme with high contrast */
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+::-webkit-scrollbar-track {
+  background: #090d16;
+  border-left: 1px solid #1c253c;
+}
+::-webkit-scrollbar-thumb {
+  background-image: linear-gradient(180deg, #3b82f6 0%, #a855f7 100%);
+  border-radius: 9999px;
+  border: 2px solid #090d16;
+}
+::-webkit-scrollbar-thumb:hover {
+  background-image: linear-gradient(180deg, #60a5fa 0%, #c084fc 100%);
+}
+
+/* Slide and Fade animation sets */
+@keyframes slideIn {
+  from {
+    transform: translateX(100%);
+  }
+  to {
+    transform: translateX(0);
+  }
+}
+
+@keyframes fadeIn {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+.animate-slide-in {
+  animation: slideIn 0.3s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+}
+
+.animate-fade-in {
+  animation: fadeIn 0.2s ease-out forwards;
+}
+
+/* Utility to scroll elements without displaying a track */
+.scrollbar-none::-webkit-scrollbar {
+  display: none;
+}
+.scrollbar-none {
+  -ms-overflow-style: none;
+  scrollbar-width: none;
+}

@@ -1,0 +1,181 @@
+{
+  "summary": {
+    "runId": "da4ad800-7042-4e76-93ba-691846993554",
+    "url": "https://stage.optevo.com/login",
+    "appName": "Optevo",
+    "moduleName": "Login",
+    "title": "Optevo - Login",
+    "timestamp": "2026-05-31T09:57:59.559Z",
+    "totalSteps": 8,
+    "passedSteps": 1,
+    "failedSteps": 1,
+    "durationMs": 40311,
+    "status": "failed"
+  },
+  "details": {
+    "runId": "da4ad800-7042-4e76-93ba-691846993554",
+    "url": "https://stage.optevo.com/login",
+    "appName": "Optevo",
+    "moduleName": "Login",
+    "status": "failed",
+    "startTime": "2026-05-31T09:57:19.248Z",
+    "locatorMap": {
+      "username field.": {
+        "selector": "[name=\"username field.\"], [placeholder=\"username field.\"], input[type=\"text\"]",
+        "score": 10,
+        "strategy": "fallback",
+        "tagName": "input",
+        "attributes": {}
+      }
+    },
+    "stepResults": [
+      {
+        "stepIndex": 2,
+        "step": {
+          "stepIndex": 2,
+          "rawText": "Step 1: Navigate to the login page.",
+          "type": "action",
+          "action": "navigate",
+          "targetField": "url",
+          "value": "login page."
+        },
+        "status": "passed",
+        "durationMs": 9760,
+        "logs": [
+          "Starting step execution: Step 1: Navigate to the login page.",
+          "Navigating browser page to URL: \"https://stage.optevo.com/login\"",
+          "Visual screenshot saved: /screenshots/run-da4ad800-7042-4e76-93ba-691846993554-step-2.png"
+        ],
+        "screenshotPath": "/screenshots/run-da4ad800-7042-4e76-93ba-691846993554-step-2.png"
+      },
+      {
+        "stepIndex": 3,
+        "step": {
+          "stepIndex": 3,
+          "rawText": "Step 2: Enter \"jay.r@optevo.com\" into the username field.",
+          "type": "action",
+          "action": "fill",
+          "targetField": "username field.",
+          "value": "jay.r@optevo.com"
+        },
+        "status": "failed",
+        "durationMs": 30240,
+        "logs": [
+          "Starting step execution: Step 2: Enter \"jay.r@optevo.com\" into the username field.",
+          "Scanning live DOM for input element matching phrase: \"username field.\"",
+          "Discovery engine resolved locator selector: \"[name=\"username field.\"], [placeholder=\"username field.\"], input[type=\"text\"]\" using scoring strategy: [fallback]",
+          "ERROR: locator.fill: Timeout 30000ms exceeded.\nCall log:\n\u001b[2m  - waiting for locator('[name=\"username field.\"], [placeholder=\"username field.\"], input[type=\"text\"]').first()\u001b[22m\n"
+        ],
+        "resolvedSelector": "[name=\"username field.\"], [placeholder=\"username field.\"], input[type=\"text\"]",
+        "error": "locator.fill: Timeout 30000ms exceeded.\nCall log:\n\u001b[2m  - waiting for locator('[name=\"username field.\"], [placeholder=\"username field.\"], input[type=\"text\"]').first()\u001b[22m\n",
+        "screenshotPath": "/screenshots/run-da4ad800-7042-4e76-93ba-691846993554-step-3.png"
+      },
+      {
+        "stepIndex": 4,
+        "step": {
+          "stepIndex": 4,
+          "rawText": "Step 3: Enter \"Jayqa@1234\" into the password field.",
+          "type": "action",
+          "action": "fill",
+          "targetField": "password field.",
+          "value": "Jayqa@1234"
+        },
+        "status": "skipped",
+        "durationMs": 0,
+        "logs": [
+          "Starting step execution: Step 3: Enter \"Jayqa@1234\" into the password field.",
+          "Skipped due to previous step failure."
+        ]
+      },
+      {
+        "stepIndex": 5,
+        "step": {
+          "stepIndex": 5,
+          "rawText": "Step 4: Click the \"Log In\" button.",
+          "type": "action",
+          "action": "click",
+          "targetField": "Log In"
+        },
+        "status": "skipped",
+        "durationMs": 0,
+        "logs": [
+          "Starting step execution: Step 4: Click the \"Log In\" button.",
+          "Skipped due to previous step failure."
+        ]
+      },
+      {
+        "stepIndex": 6,
+        "step": {
+          "stepIndex": 6,
+          "rawText": "Expected Result: The dashboard should be navigate https://stage.optevo.com/desktop/home",
+          "type": "validation",
+          "validation": "url",
+          "targetField": "url",
+          "value": "https://stage.optevo.com/desktop/home"
+        },
+        "status": "skipped",
+        "durationMs": 0,
+        "logs": [
+          "Starting step execution: Expected Result: The dashboard should be navigate https://stage.optevo.com/desktop/home",
+          "Skipped due to previous step failure."
+        ]
+      },
+      {
+        "stepIndex": 7,
+        "step": {
+          "stepIndex": 7,
+          "rawText": "It should display an Optevo text logo on left top side and Ask Evo AI button text on navbar",
+          "type": "validation",
+          "validation": "text",
+          "targetField": "body",
+          "value": "Optevo"
+        },
+        "status": "skipped",
+        "durationMs": 0,
+        "logs": [
+          "Starting step execution: It should display an Optevo text logo on left top side and Ask Evo AI button text on navbar",
+          "Skipped due to previous step failure."
+        ]
+      },
+      {
+        "stepIndex": 9,
+        "step": {
+          "stepIndex": 9,
+          "rawText": "Step 1: Enter invalid credentials.",
+          "type": "action",
+          "action": "fill",
+          "targetField": "credentials",
+          "value": "invalid"
+        },
+        "status": "skipped",
+        "durationMs": 0,
+        "logs": [
+          "Starting step execution: Step 1: Enter invalid credentials.",
+          "Skipped due to previous step failure."
+        ]
+      },
+      {
+        "stepIndex": 10,
+        "step": {
+          "stepIndex": 10,
+          "rawText": "Expected Result: Error message \"Log In Error Incorrect Email\" is displayed when user enters invalid email and password\" displayed in red.",
+          "type": "validation",
+          "validation": "text",
+          "targetField": "body",
+          "value": "Log In Error Incorrect Email"
+        },
+        "status": "skipped",
+        "durationMs": 0,
+        "logs": [
+          "Starting step execution: Expected Result: Error message \"Log In Error Incorrect Email\" is displayed when user enters invalid email and password\" displayed in red.",
+          "Skipped due to previous step failure."
+        ]
+      }
+    ],
+    "consoleLogs": [],
+    "networkErrors": [],
+    "endTime": "2026-05-31T09:57:59.559Z",
+    "durationMs": 40311,
+    "generatedScriptPath": "/generated-tests/test_stage_optevo_com_login_da4ad800.spec.ts"
+  }
+}
