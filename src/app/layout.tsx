@@ -25,7 +25,7 @@ export default function RootLayout({
   children: React.ReactNode;
 }>) {
   return (
-    <html lang="en" className={`${outfit.variable} ${jetbrainsMono.variable} h-full antialiased dark`}>
+    <html lang="en" suppressHydrationWarning className={`${outfit.variable} ${jetbrainsMono.variable} h-full antialiased dark`}>
       <body className="h-full flex bg-[#090d16] text-[#f9fafb] font-sans overflow-hidden">
         <Sidebar />
         <div className="flex-1 flex flex-col overflow-hidden">

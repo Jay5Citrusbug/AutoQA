@@ -1,9 +1,9 @@
 import { Page } from '@playwright/test';
 import { ParsedStep } from '@/types/testCase';
 
-// Universal timeout: 2 minutes max wait for any validation assertion.
+// Universal timeout: 15 seconds max wait for any validation assertion.
 // This handles slow post-login redirects and heavy SPA navigation gracefully.
-const VALIDATION_TIMEOUT_MS = 120_000; // 2 minutes
+const VALIDATION_TIMEOUT_MS = 15_000; // 15 seconds
 const POLL_INTERVAL_MS = 500;           // check every 500ms
 
 export interface IValidator {

@@ -6,6 +6,7 @@ import {
   Terminal, X, Copy, Check, FileCode, CheckCircle2
 } from 'lucide-react';
 import { GeneratedScript } from '@/types/mvp';
+import SafeFormattedDate from '@/components/SafeFormattedDate';
 
 export default function GeneratedScriptsPage() {
   const [scripts, setScripts] = useState<GeneratedScript[]>([]);
@@ -139,7 +140,7 @@ export default function GeneratedScriptsPage() {
                     </div>
                   </td>
                   <td className="px-6 py-4 text-zinc-400 font-mono">{s.moduleName}</td>
-                  <td className="px-6 py-4 text-zinc-500 font-mono">{new Date(s.createdDate).toLocaleDateString()}</td>
+                  <td className="px-6 py-4 text-zinc-500 font-mono"><SafeFormattedDate value={s.createdDate} format="date" /></td>
                   <td className="px-6 py-4 text-right">
                     <div className="flex items-center justify-end gap-2.5">
                       <button

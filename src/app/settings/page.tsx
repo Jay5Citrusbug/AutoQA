@@ -5,6 +5,7 @@ import { Settings, Save, ShieldCheck, Cpu, HardDrive, ToggleLeft } from 'lucide-
 
 export default function SettingsPage() {
   const [successMsg, setSuccessMsg] = useState('');
+  const [errorMsg, setErrorMsg] = useState('');
 
   // Config state
   const [execSettings, setExecSettings] = useState({
@@ -15,10 +16,45 @@ export default function SettingsPage() {
     reportFormat: 'both'
   });
 
-  const handleSaveSettings = (e: React.FormEvent) => {
+  // Load persistent settings on mount
+  React.useEffect(() => {
+    fetch('/api/settings')
+      .then(res => {
+        if (!res.ok) throw new Error('Failed to load settings from server.');
+        return res.json();
+      })
+      .then(data => {
+        if (data) {
+          setExecSettings({
+            screenshotCapture: data.screenshotCapture ?? 'on-failure',
+            videoCapture: data.videoCapture ?? 'off',
+            headlessMode: data.headlessMode ?? true,
+            defaultTimeout: data.defaultTimeout ?? 30,
+            reportFormat: data.reportFormat ?? 'both'
+          });
+        }
+      })
+      .catch(err => {
+        setErrorMsg(err.message || 'Failed to connect to configurations API.');
+      });
+  }, []);
+
+  const handleSaveSettings = async (e: React.FormEvent) => {
     e.preventDefault();
-    setSuccessMsg('System configuration settings saved successfully.');
-    setTimeout(() => setSuccessMsg(''), 3000);
+    setSuccessMsg('');
+    setErrorMsg('');
+    try {
+      const res = await fetch('/api/settings', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(execSettings)
+      });
+      if (!res.ok) throw new Error('Failed to save settings to server.');
+      setSuccessMsg('System configuration settings saved successfully.');
+      setTimeout(() => setSuccessMsg(''), 3000);
+    } catch (err: any) {
+      setErrorMsg(err.message || 'Connection failure while saving settings.');
+    }
   };
 
   return (
@@ -35,6 +71,12 @@ export default function SettingsPage() {
       {successMsg && (
         <div className="bg-emerald-500/10 border border-emerald-500/20 text-emerald-400 p-4.5 rounded-xl text-sm sm:text-base font-bold">
           {successMsg}
+        </div>
+      )}
+
+      {errorMsg && (
+        <div className="bg-rose-500/10 border border-rose-500/20 text-rose-400 p-4.5 rounded-xl text-sm sm:text-base font-bold">
+          {errorMsg}
         </div>
       )}
 

@@ -4,6 +4,7 @@ import { z } from 'zod';
 
 // Request validation for POST /api/run-test
 export const RunTestRequestSchema = z.object({
+  runId: z.string().optional(),
   url: z.string().url('Invalid target URL format'),
   appName: z.string().min(1, 'Application Name is required'),
   moduleName: z.string().min(1, 'Module Name is required'),

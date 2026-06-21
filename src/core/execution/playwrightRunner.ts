@@ -4,6 +4,7 @@ import {
   StepExecutionResult,
   LocatorMap,
   TestSuiteResult,
+  NetworkRequestRecord,
 } from '@/types/execution';
 import { ParsedStep } from '@/types/testCase';
 import { BrowserEngine, DeviceMode } from '@/types/mvp';
@@ -16,9 +17,12 @@ import { ReportGenerator } from '../reporting/reportGenerator';
 import { PlaywrightGenerator } from '../generator/playwrightGenerator';
 import { logger } from '@/utils/logger';
 import { v4 as uuidv4 } from 'uuid';
+import fs from 'fs';
+import path from 'path';
+import { fileHelper } from '@/utils/fileHelper';
 
-// Universal 2-minute timeout applied to all network-dependent operations.
-const UNIVERSAL_TIMEOUT_MS = 120_000;
+// Universal 30-second timeout applied to all network-dependent operations.
+const UNIVERSAL_TIMEOUT_MS = 30_000;
 
 // -----------------------------------------------------------------------
 // Device emulation presets (Playwright built-in device descriptors)
@@ -139,13 +143,30 @@ export class PlaywrightRunner implements IPlaywrightRunner {
     suites: { id: string; title: string; steps: ParsedStep[] }[],
     appName?: string,
     moduleName?: string,
-    config?: RunConfig,
+    config?: RunConfig & { runId?: string },
   ): Promise<ExecutionContext> {
-    const runId = uuidv4();
+    const runId = config?.runId || uuidv4();
     const startTime = new Date().toISOString();
     const browser = config?.browser ?? 'chromium';
     const deviceMode = config?.deviceMode ?? 'desktop';
     const maxWorkers = Math.max(1, Math.min(config?.maxWorkers ?? 1, 8));
+
+    // Initialize global activeRuns
+    if (!(globalThis as any).activeRuns) {
+      (globalThis as any).activeRuns = {};
+    }
+    (globalThis as any).activeRuns[runId] = { aborted: false };
+
+    // Initialize global activeLogs storage for live streaming logs
+    if (!(globalThis as any).activeLogs) {
+      (globalThis as any).activeLogs = {};
+    }
+    (globalThis as any).activeLogs[runId] = [
+      `[${new Date().toLocaleTimeString()}] [SYSTEM] INITIALIZING AUTOQA KERNEL...`,
+      `[${new Date().toLocaleTimeString()}] [SYSTEM] NODE_VERSION v20.11.0`,
+      `[${new Date().toLocaleTimeString()}] [SYSTEM] LOADING TEST SUITE CONTEXT: functional_runner.ts`,
+      `[${new Date().toLocaleTimeString()}] [SYSTEM] BROWSER_STARTING [IN_PROGRESS]`
+    ];
 
     logger.info(
       `Starting parallel test run. Suites: ${suites.length}, Workers: ${maxWorkers}, Browser: ${browser}, Device: ${deviceMode}`,
@@ -183,9 +204,14 @@ export class PlaywrightRunner implements IPlaywrightRunner {
     }
 
     // ---- Aggregate all step results into flat context.stepResults ----
+    const allNetworkRequests: NetworkRequestRecord[] = [];
     for (const sr of suiteResults) {
       context.stepResults.push(...sr.stepResults);
+      if (sr.networkRequests) {
+        allNetworkRequests.push(...sr.networkRequests);
+      }
     }
+    context.networkRequests = allNetworkRequests;
 
     context.testSuiteResults = suiteResults;
     context.status = suiteResults.some((s) => s.status === 'failed') ? 'failed' : 'completed';
@@ -217,6 +243,10 @@ export class PlaywrightRunner implements IPlaywrightRunner {
       await this.reportGenerator.generate(reportPayload.details);
     }
 
+    if ((globalThis as any).activeRuns && runId) {
+      delete (globalThis as any).activeRuns[runId];
+    }
+
     return context;
   }
 
@@ -233,39 +263,125 @@ export class PlaywrightRunner implements IPlaywrightRunner {
   ): Promise<TestSuiteResult> {
     const suiteStart = Date.now();
     const stepResults: StepExecutionResult[] = [];
+    const networkRequests: NetworkRequestRecord[] = [];
+    const requestTimes = new Map<any, number>();
+
+    const settings = fileHelper.getSettings();
+    const videoCaptureSetting = settings.videoCapture ?? 'off';
+    const isHeadless = config?.headless !== undefined ? config.headless : settings.headlessMode;
+
+    const pushRealTimeLog = (msg: string) => {
+      const timeStr = new Date().toLocaleTimeString();
+      const formattedLog = `[${timeStr}] [${suite.id}] ${msg}`;
+      if ((globalThis as any).activeLogs?.[runId]) {
+        (globalThis as any).activeLogs[runId].push(formattedLog);
+      }
+    };
+
+    pushRealTimeLog(`LAUNCHING BROWSER ENGINE: ${browserEngine} (${deviceMode} mode)...`);
 
     const browserType = getBrowserType(browserEngine);
     const deviceConfig = DEVICE_CONFIGS[deviceMode];
 
-    let browser;
+    let browser: any;
+    let browserContext: any;
+    let page: any;
+    let tempVideoPath = '';
+    let videoPath = '';
     try {
       // Launch a dedicated browser instance for this TC
       browser = await browserType.launch({
-        headless: config?.headless !== false,
+        headless: isHeadless,
+        slowMo: isHeadless ? undefined : 1000, // Add slowMo when in headed mode so interactions are visible
         args:
           browserEngine === 'chromium'
             ? ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage']
             : [],
       });
 
-      const browserContext = await browser.newContext({
+      const recordVideoDir = path.join(process.cwd(), 'public', 'videos');
+      if (!fs.existsSync(recordVideoDir)) {
+        fs.mkdirSync(recordVideoDir, { recursive: true });
+      }
+
+      browserContext = await browser.newContext({
         viewport: deviceConfig.viewport,
         userAgent: deviceConfig.userAgent,
         isMobile: deviceConfig.isMobile ?? false,
         hasTouch: deviceConfig.hasTouch ?? false,
+        recordVideo: videoCaptureSetting !== 'off' ? {
+          dir: recordVideoDir,
+          size: { width: 1280, height: 720 }
+        } : undefined
       });
 
-      const page = await browserContext.newPage();
+      page = await browserContext.newPage();
+
+      // Listen to all network requests for waterfall diagram
+      page.on('request', (req: any) => {
+        requestTimes.set(req, Date.now());
+      });
+      page.on('response', (res: any) => {
+        const req = res.request();
+        const startTime = requestTimes.get(req);
+        const durationMs = startTime ? Date.now() - startTime : 0;
+        
+        const record: NetworkRequestRecord = {
+          url: req.url(),
+          method: req.method(),
+          status: res.status(),
+          contentType: res.headers()['content-type'] || 'text/html',
+          durationMs,
+          timestamp: new Date().toISOString(),
+        };
+        networkRequests.push(record);
+      });
 
       // Hook up log listeners
       this.logManager.startListeners(page);
 
-      // ---- Execute each step INDEPENDENTLY (no global abort on failure) ----
+      let suiteFailed = false;
+
+      // ---- Execute each step ----
       for (let i = 0; i < suite.steps.length; i++) {
         const step = suite.steps[i];
         const stepIndex = step.stepIndex;
         const stepStartTime = Date.now();
         const stepLogs: string[] = [];
+
+        const originalPush = stepLogs.push;
+        stepLogs.push = function (...items: string[]) {
+          items.forEach(item => pushRealTimeLog(item));
+          return originalPush.apply(this, items);
+        };
+
+        // Check for abort signal from user
+        if ((globalThis as any).activeRuns?.[runId]?.aborted) {
+          suiteFailed = true;
+          pushRealTimeLog(`EXECUTION ABORTED BY USER SIGNAL`);
+          stepLogs.push(`Aborted: execution cancelled by user`);
+          stepResults.push({
+            stepIndex,
+            step,
+            status: 'skipped',
+            durationMs: 0,
+            logs: stepLogs,
+          });
+          continue;
+        }
+
+        if (suiteFailed) {
+          logger.info(`[${suite.id}] Step ${stepIndex} skipped due to prior failure`);
+          stepLogs.push(`Skipping step: ${step.rawText}`);
+          stepResults.push({
+            stepIndex,
+            step,
+            status: 'skipped',
+            durationMs: 0,
+            logs: stepLogs,
+          });
+          continue;
+        }
 
         logger.info(`[${suite.id}] Step ${stepIndex}: ${step.rawText}`);
         stepLogs.push(`Starting step: ${step.rawText}`);
@@ -287,7 +403,7 @@ export class PlaywrightRunner implements IPlaywrightRunner {
                   targetUrl = url.startsWith('http') ? url : 'https://' + targetUrl;
                 }
                 stepLogs.push(`Navigating to: "${targetUrl}"`);
-                await page.goto(targetUrl, { waitUntil: 'networkidle', timeout: UNIVERSAL_TIMEOUT_MS });
+                await page.goto(targetUrl, { waitUntil: 'load', timeout: 30_000 });
                 break;
               }
 
@@ -317,8 +433,13 @@ export class PlaywrightRunner implements IPlaywrightRunner {
                   stepLogs.push(`Resolved: username=[${userMatch.selector}], password=[${passMatch.selector}]`);
 
                   result.resolvedSelector = `${userMatch.selector} & ${passMatch.selector}`;
-                  await page.locator(userMatch.selector).first().fill(userVal);
-                  await page.locator(passMatch.selector).first().fill(passVal);
+                  if (!isHeadless) {
+                    await page.locator(userMatch.selector).first().pressSequentially(userVal, { delay: 100 });
+                    await page.locator(passMatch.selector).first().pressSequentially(passVal, { delay: 100 });
+                  } else {
+                    await page.locator(userMatch.selector).first().fill(userVal);
+                    await page.locator(passMatch.selector).first().fill(passVal);
+                  }
                   break;
                 }
 
@@ -326,7 +447,11 @@ export class PlaywrightRunner implements IPlaywrightRunner {
                 const match = await this.discovery.discover(page, step.targetField);
                 stepLogs.push(`Resolved: "${match.selector}" (${match.score}%)`);
                 result.resolvedSelector = match.selector;
-                await page.locator(match.selector).first().fill(step.value || '');
+                if (!isHeadless) {
+                  await page.locator(match.selector).first().pressSequentially(step.value || '', { delay: 100 });
+                } else {
+                  await page.locator(match.selector).first().fill(step.value || '');
+                }
                 stepLogs.push(`Filled "${step.value}" into element`);
                 break;
               }
@@ -340,17 +465,17 @@ export class PlaywrightRunner implements IPlaywrightRunner {
                 await page.locator(match.selector).first().click({ timeout: 15_000 });
                 stepLogs.push(`Clicked element`);
 
-                // Post-click: wait for navigation / network to settle (2 min patience)
-                stepLogs.push(`Waiting for page to settle after click...`);
+                // Post-click: wait for page/DOM load (with a short timeout)
+                stepLogs.push(`Waiting for page/DOM load...`);
                 try {
-                  await page.waitForLoadState('networkidle', { timeout: UNIVERSAL_TIMEOUT_MS });
-                  stepLogs.push(`Page network settled.`);
+                  await page.waitForLoadState('load', { timeout: 3000 });
+                  stepLogs.push(`Page settled.`);
                 } catch {
                   try {
-                    await page.waitForLoadState('domcontentloaded', { timeout: 5_000 });
-                    stepLogs.push(`Page DOM ready (network still active — WebSocket app).`);
+                    await page.waitForLoadState('domcontentloaded', { timeout: 1000 });
+                    stepLogs.push(`Page DOM ready.`);
                   } catch {
-                    stepLogs.push(`Page still loading — continuing.`);
+                    stepLogs.push(`Continuing execution.`);
                   }
                 }
                 break;
@@ -422,6 +547,7 @@ export class PlaywrightRunner implements IPlaywrightRunner {
           result.status = 'failed';
           result.error = stepErr?.message || 'Error during browser interaction.';
           stepLogs.push(`ERROR: ${result.error}`);
+          suiteFailed = true;
 
           // Capture failure screenshot
           if (config?.captureScreenshots !== false) {
@@ -430,8 +556,6 @@ export class PlaywrightRunner implements IPlaywrightRunner {
               .catch(() => undefined);
             if (errShot) result.screenshotPath = errShot;
           }
-
-          // NOTE: No global abort — each step continues independently within the TC
         }
 
         result.durationMs = Date.now() - stepStartTime;
@@ -459,8 +583,38 @@ export class PlaywrightRunner implements IPlaywrightRunner {
         }
       }
     } finally {
+      if (page) {
+        try {
+          const video = page.video();
+          if (video) {
+            tempVideoPath = await video.path().catch(() => '');
+          }
+        } catch (err) {}
+      }
       if (browser) {
+        if (!isHeadless && page) {
+          pushRealTimeLog(`Headed mode: pausing for 5 seconds before closing browser...`);
+          await page.waitForTimeout(5000).catch(() => {});
+        }
         await browser.close().catch(() => {});
+      }
+      if (tempVideoPath && fs.existsSync(tempVideoPath)) {
+        try {
+          const finalFileName = `run-${runId}-${suite.id}.webm`;
+          const finalVideoPath = path.join(process.cwd(), 'public', 'videos', finalFileName);
+          
+          const failed = stepResults.some((r) => r.status === 'failed');
+          if (videoCaptureSetting === 'retain-on-failure' && !failed) {
+            fs.unlinkSync(tempVideoPath);
+          } else {
+            // Copy file to final path
+            fs.renameSync(tempVideoPath, finalVideoPath);
+            videoPath = `/videos/${finalFileName}`;
+            pushRealTimeLog(`Video session recording saved: ${videoPath}`);
+          }
+        } catch (videoErr) {
+          logger.error('Failed to process video recording', videoErr);
+        }
       }
     }
 
@@ -472,6 +626,8 @@ export class PlaywrightRunner implements IPlaywrightRunner {
       status: failed ? 'failed' : 'passed',
       durationMs: Date.now() - suiteStart,
       stepResults,
+      videoPath: videoPath || undefined,
+      networkRequests,
     };
   }
 }

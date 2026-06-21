@@ -4,7 +4,7 @@ import React, { useState, useEffect, useRef } from 'react';
 import { 
   Play, Settings, ClipboardList, Trash2, LayoutTemplate, 
   Terminal, ShieldAlert, ArrowLeft, RefreshCcw, CheckCircle, 
-  XCircle, Clock, Eye, AlertCircle, Sparkles, ChevronRight, X, Image,
+  XCircle, Clock, Eye, AlertCircle, Sparkles, ChevronRight, X,
   Upload, Terminal as TerminalIcon, ShieldCheck, Flame, Compass, PlayCircle, Loader2, Search, FileTerminal,
   Monitor, Smartphone, Tablet, Globe, Zap, Users
 } from 'lucide-react';
@@ -15,8 +15,11 @@ export default function RunTestPage() {
   const [url, setUrl] = useState('');
   const [appName, setAppName] = useState('');
   const [moduleName, setModuleName] = useState('');
+  const [testTitle, setTestTitle] = useState('');
+  const [testDescription, setTestDescription] = useState('');
   const [execType, setExecType] = useState<ExecutionType>('Functional');
   const [stepsText, setStepsText] = useState('');
+  const [expectedResult, setExpectedResult] = useState('');
   const [browser, setBrowser] = useState<BrowserEngine>('chromium');
   const [deviceMode, setDeviceMode] = useState<DeviceMode>('desktop');
   const [maxWorkers, setMaxWorkers] = useState(1);
@@ -49,6 +52,18 @@ export default function RunTestPage() {
   const [stepResults, setStepResults] = useState<StepExecution[]>([]);
   const [runDuration, setRunDuration] = useState(0);
   const [selectedFailedStep, setSelectedFailedStep] = useState<StepExecution | null>(null);
+  const [videoPath, setVideoPath] = useState<string | undefined>(undefined);
+  const [networkRequests, setNetworkRequests] = useState<any[]>([]);
+  const [activeAuditTab, setActiveAuditTab] = useState<'details' | 'video' | 'network'>('details');
+  const [logFilter, setLogFilter] = useState<'all' | 'info' | 'debug' | 'error'>('all');
+
+  useEffect(() => {
+    if (selectedFailedStep) {
+      setActiveAuditTab('details');
+      setLogFilter('all');
+    }
+  }, [selectedFailedStep]);
+
   const [isFocused, setIsFocused] = useState(false);
   const [liveLogs, setLiveLogs] = useState<string[]>([
     `[SYSTEM] AutoQA Execution Kernel initialized. Configure execution parameters and click "Run Test" to view real-time browser automation logs.`
@@ -60,21 +75,25 @@ export default function RunTestPage() {
   const textareaRef = useRef<HTMLTextAreaElement>(null);
 
   const handleInsertTemplate = () => {
-    const template = [
+    setTestTitle('Login Flow Verification');
+    setTestDescription('Verify that a registered user can log in successfully using valid credentials and lands on the secure area dashboard.');
+    setStepsText([
       'Navigate to "https://the-internet.herokuapp.com/login"',
       'Enter "tomsmith" into input "username"',
       'Enter "SuperSecretPassword!" into input "password"',
       'Click the login button',
-      'Verify success message "You logged into a secure area!"'
-    ].join('\n');
-    setStepsText(template);
-    setAppName("Heroku App Hub");
-    setModuleName("Security Auth");
-    setUrl("https://the-internet.herokuapp.com/login");
+    ].join('\n'));
+    setExpectedResult('Verify success message "You logged into a secure area!" exists');
+    setAppName('Heroku App Hub');
+    setModuleName('Security Auth');
+    setUrl('https://the-internet.herokuapp.com/login');
   };
 
   const handleClearEditor = () => {
+    setTestTitle('');
+    setTestDescription('');
     setStepsText('');
+    setExpectedResult('');
   };
 
   // --- SIMULATION TRIGGERS ---
@@ -82,10 +101,63 @@ export default function RunTestPage() {
   const [generatedScriptPath, setGeneratedScriptPath] = useState<string | undefined>(undefined);
   const [apiError, setApiError] = useState<string | null>(null);
 
-  // --- LOAD HISTORICAL RUN ID FROM QUERY PARAMS ---
+  const [showBugReport, setShowBugReport] = useState(false);
+  const [bugReportContent, setBugReportContent] = useState('');
+  const [bugCopied, setBugCopied] = useState(false);
+
+  const generateBugReport = () => {
+    if (!selectedFailedStep) return;
+
+    // Get preceding steps up to the failed step
+    const stepsReproduce = stepResults
+      .filter(s => s.stepIndex <= selectedFailedStep.stepIndex)
+      .map(s => `${s.stepIndex === selectedFailedStep.stepIndex ? '->' : '  '} Step ${s.stepIndex}: ${s.rawText}`)
+      .join('\n');
+
+    const logs = (selectedFailedStep.consoleLogs || []).join('\n') || 'No logs recorded.';
+
+    const markdown = `# Bug Report: ${appName || 'AutoQA Target'} - ${moduleName || 'Automation Scenario'}
+
+## General Information
+- **Target URL**: ${url}
+- **Environment**: ${browser} (${deviceMode} mode)
+- **Execution Run ID**: ${runId || 'N/A'}
+- **Duration**: ${runDuration ? (runDuration / 1000).toFixed(2) + 's' : 'N/A'}
+
+## Failure Details
+- **Failed Step**: Step ${selectedFailedStep.stepIndex} - "${selectedFailedStep.rawText}"
+- **Expected Behavior**: ${selectedFailedStep.expectedResult || "Expected validation text was not matched in target selectors."}
+- **Actual Behavior**: ${selectedFailedStep.actualResult || selectedFailedStep.error || "Target element did not load within threshold parameters."}
+- **Error Details**: 
+\`\`\`
+${selectedFailedStep.error || 'N/A'}
+\`\`\`
+
+## Steps to Reproduce
+\`\`\`
+${stepsReproduce}
+\`\`\`
+
+## Evidence
+- **Visual Evidence (Screenshot)**: ${selectedFailedStep.screenshot ? window.location.origin + selectedFailedStep.screenshot : 'No screenshot captured.'}
+- **Console Output**:
+\`\`\`
+${logs}
+\`\`\`
+
+## Automation Test Script Link
+- **Spec Path**: ${generatedScriptPath ? window.location.origin + generatedScriptPath : 'No script generated.'}
+`;
+    setBugReportContent(markdown);
+    setShowBugReport(true);
+  };
+
+  // --- LOAD HISTORICAL RUN ID OR SAVED TEST CASE FROM QUERY PARAMS ---
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
     const runIdParam = params.get('runId');
+    const testCaseIdParam = params.get('testCaseId');
+
     if (runIdParam) {
       const loadHistoricalRun = async () => {
         try {
@@ -101,6 +173,8 @@ export default function RunTestPage() {
           setAppName(data.details.appName || 'AutoQA Target');
           setModuleName(data.details.moduleName || 'Default Flow');
           setRunDuration(data.summary.durationMs);
+          setVideoPath(data.details.testSuiteResults?.[0]?.videoPath);
+          setNetworkRequests(data.details.networkRequests || []);
           
           const results: StepExecution[] = data.details.stepResults.map((s: any) => ({
             stepIndex: s.stepIndex,
@@ -112,7 +186,7 @@ export default function RunTestPage() {
             error: s.error,
             expectedResult: s.status === 'failed' ? 'Assertion verify target element text visible.' : undefined,
             actualResult: s.error ? s.error : undefined,
-            consoleLogs: s.error ? [`[ERROR] step ${s.stepIndex} action failure: ${s.error}`] : undefined
+            consoleLogs: s.logs || []
           }));
           
           setStepResults(results);
@@ -124,27 +198,56 @@ export default function RunTestPage() {
         }
       };
       loadHistoricalRun();
+    } else if (testCaseIdParam) {
+      const loadTestCase = async () => {
+        try {
+          const res = await fetch(`/api/test-cases/${testCaseIdParam}`);
+          if (!res.ok) throw new Error('Test case not found');
+          const data = await res.json();
+          
+          setUrl(data.websiteUrl || '');
+          setAppName(data.title || '');
+          setModuleName(data.moduleName || '');
+          setStepsText(data.stepsText || '');
+          setRunStatus('form');
+          
+          // Allow state updates to settle before enabling local saving
+          setTimeout(() => {
+            isLoadedRef.current = true;
+          }, 100);
+        } catch (err: any) {
+          setApiError('Failed to load test case: ' + err.message);
+          setRunStatus('form');
+        }
+      };
+      loadTestCase();
     }
   }, []);
 
   const isLoadedRef = useRef(false);
 
-  // Load from localStorage on mount (only if not loading a historical run)
+  // Load from localStorage on mount (only if not loading a historical run or test case)
   useEffect(() => {
     if (typeof window === 'undefined') return;
     const params = new URLSearchParams(window.location.search);
-    if (!params.get('runId')) {
+    if (!params.get('runId') && !params.get('testCaseId')) {
       const savedUrl = localStorage.getItem('autoqa_url');
       const savedAppName = localStorage.getItem('autoqa_app_name');
       const savedModuleName = localStorage.getItem('autoqa_module_name');
+      const savedTestTitle = localStorage.getItem('autoqa_test_title');
+      const savedTestDescription = localStorage.getItem('autoqa_test_description');
       const savedStepsText = localStorage.getItem('autoqa_steps_text');
+      const savedExpectedResult = localStorage.getItem('autoqa_expected_result');
 
       if (savedUrl !== null) setUrl(savedUrl);
       if (savedAppName !== null) setAppName(savedAppName);
       if (savedModuleName !== null) setModuleName(savedModuleName);
+      if (savedTestTitle !== null) setTestTitle(savedTestTitle);
+      if (savedTestDescription !== null) setTestDescription(savedTestDescription);
       if (savedStepsText !== null) setStepsText(savedStepsText);
+      if (savedExpectedResult !== null) setExpectedResult(savedExpectedResult);
+      isLoadedRef.current = true;
     }
-    isLoadedRef.current = true;
   }, []);
 
   // Save to localStorage when state changes (only after loading has completed)
@@ -165,13 +268,48 @@ export default function RunTestPage() {
 
   useEffect(() => {
     if (!isLoadedRef.current || typeof window === 'undefined') return;
+    localStorage.setItem('autoqa_test_title', testTitle);
+  }, [testTitle]);
+
+  useEffect(() => {
+    if (!isLoadedRef.current || typeof window === 'undefined') return;
+    localStorage.setItem('autoqa_test_description', testDescription);
+  }, [testDescription]);
+
+  useEffect(() => {
+    if (!isLoadedRef.current || typeof window === 'undefined') return;
     localStorage.setItem('autoqa_steps_text', stepsText);
   }, [stepsText]);
+
+  useEffect(() => {
+    if (!isLoadedRef.current || typeof window === 'undefined') return;
+    localStorage.setItem('autoqa_expected_result', expectedResult);
+  }, [expectedResult]);
+
+  const handleAbortRun = async () => {
+    if (!runId) return;
+    try {
+      await fetch('/api/run-test/cancel', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ runId })
+      });
+      setLiveLogs(prev => [
+        ...prev,
+        `[${new Date().toLocaleTimeString()}] [SYSTEM] CANCEL SIGNAL INITIATED BY USER...`
+      ]);
+    } catch (err) {
+      console.error('Failed to send abort signal', err);
+    }
+  };
 
   const handleStartExecution = async () => {
     setRunStatus('executing');
     setSelectedFailedStep(null);
     setApiError(null);
+
+    const clientRunId = 'run_' + Date.now() + '_' + Math.random().toString(36).substring(2, 9);
+    setRunId(clientRunId);
 
     setLiveLogs([
       `[${new Date().toLocaleTimeString()}] INITIALIZING AUTOQA KERNEL...`,
@@ -219,16 +357,36 @@ export default function RunTestPage() {
       ]);
     }, 4500);
 
+    // Poll server-side activeLogs for real-time progress logging
+    const pollInterval = setInterval(async () => {
+      try {
+        const res = await fetch(`/api/run-test?runId=${clientRunId}`);
+        if (res.ok) {
+          const data = await res.json();
+          if (data.logs && data.logs.length > 0) {
+            setLiveLogs(data.logs);
+          }
+        }
+      } catch (err) {
+        // ignore polling error
+      }
+    }, 600);
+
     try {
       const response = await fetch('/api/run-test', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
+          runId: clientRunId,
           url,
-          appName: appName.trim() || 'AutoQA Target',
+          appName: appName.trim() || testTitle.trim() || 'AutoQA Target',
           moduleName: moduleName.trim() || 'Default Flow',
           execType,
-          stepsText,
+          // Only send pure steps + expected result — title & description are UI-only metadata
+          stepsText: [
+            stepsText.trim(),
+            expectedResult.trim() ? expectedResult.trim() : '',
+          ].filter(Boolean).join('\n'),
           browser,
           deviceMode,
           maxWorkers,
@@ -236,10 +394,11 @@ export default function RunTestPage() {
         })
       });
 
-      // Clear layout timers
+      // Clear layout timers and polling loop
       clearTimeout(stageTimer1);
       clearTimeout(stageTimer2);
       clearTimeout(stageTimer3);
+      clearInterval(pollInterval);
 
       const data = await response.json();
 
@@ -250,6 +409,8 @@ export default function RunTestPage() {
       setRunId(data.runId);
       setGeneratedScriptPath(data.generatedScriptPath);
       setRunDuration(data.durationMs);
+      setVideoPath(data.videoPath);
+      setNetworkRequests(data.networkRequests || []);
 
       // Map step results
       const results: StepExecution[] = data.steps.map((s: any) => ({
@@ -262,7 +423,7 @@ export default function RunTestPage() {
         error: s.error,
         expectedResult: s.status === 'failed' ? 'Assertion verify target element text visible.' : undefined,
         actualResult: s.error ? s.error : undefined,
-        consoleLogs: s.error ? [`[ERROR] step ${s.stepIndex} action failure: ${s.error}`] : undefined
+        consoleLogs: s.consoleLogs || []
       }));
 
       setStepResults(results);
@@ -308,6 +469,7 @@ export default function RunTestPage() {
       clearTimeout(stageTimer1);
       clearTimeout(stageTimer2);
       clearTimeout(stageTimer3);
+      clearInterval(pollInterval);
       
       const errMsg = err?.message || 'Failed to communicate with execution server.';
       setApiError(errMsg);
@@ -402,7 +564,7 @@ export default function RunTestPage() {
           {/* Core content split panel */}
           <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
             
-            {/* Left: Test Case Editor */}
+            {/* Left: Structured Test Case Editor */}
             <div className="lg:col-span-2 border border-zinc-800 bg-[#101524] rounded-2xl flex flex-col">
               
               {/* Editor Header */}
@@ -431,50 +593,118 @@ export default function RunTestPage() {
                     className="text-sm sm:text-base font-bold text-rose-400 hover:text-rose-300 border border-rose-500/10 bg-rose-500/5 px-4 py-2.5 rounded-xl flex items-center gap-1.5 transition-all"
                   >
                     <Trash2 className="h-4.5 w-4.5" />
-                    Clear Editor
+                    Clear All
                   </button>
                 </div>
               </div>
 
-              {/* Editor Area */}
-              <div className="relative flex min-h-[300px] bg-[#090d16]/30 overflow-hidden">
-                 {/* Drag-and-drop placeholder visual overlay */}
-                {!stepsText && !isFocused && (
-                  <div className="absolute inset-0 flex items-center justify-center pointer-events-none text-sm sm:text-base font-bold text-zinc-700 tracking-widest uppercase gap-2 select-none">
-                    <Upload className="h-5 w-5 text-zinc-700" />
-                    Drag and drop .TCE files to import
-                  </div>
-                )}
+              <div className="flex flex-col divide-y divide-zinc-800/60">
 
-                {/* Line numbers panel */}
-                <div className="w-14 bg-zinc-950/20 text-right pr-4 py-4 border-r border-[#1c253c]/30 font-mono text-sm sm:text-base text-zinc-750 select-none leading-relaxed flex flex-col">
-                  {Array.from({ length: Math.max(lineCount, 15) }).map((_, i) => (
-                    <div key={i}>{String(i + 1).padStart(2, '0')}</div>
-                  ))}
+                {/* FIELD 1: Test Case Title */}
+                <div className="flex gap-0 group">
+                  <div className="w-1.5 rounded-tl-none bg-blue-500/40 group-focus-within:bg-blue-500 transition-colors shrink-0" />
+                  <div className="flex-1 px-5 py-4 flex flex-col gap-1.5">
+                    <label className="text-[10px] sm:text-xs font-bold uppercase tracking-widest text-blue-400 flex items-center gap-1.5">
+                      <span className="h-4 w-4 rounded bg-blue-500/15 border border-blue-500/30 text-blue-400 flex items-center justify-center text-[9px] font-black">1</span>
+                      Test Case Title
+                      <span className="text-zinc-600 font-normal normal-case tracking-normal ml-1">— short name for this test scenario</span>
+                    </label>
+                    <input
+                      type="text"
+                      value={testTitle}
+                      onChange={e => setTestTitle(e.target.value)}
+                      placeholder="e.g. Verify Login with Valid Credentials"
+                      className="bg-transparent text-base sm:text-lg font-semibold text-white placeholder-zinc-600 focus:outline-none w-full"
+                    />
+                  </div>
                 </div>
 
-                <textarea
-                  ref={textareaRef}
-                  value={stepsText}
-                  onChange={e => setStepsText(e.target.value)}
-                  onFocus={() => setIsFocused(true)}
-                  onBlur={() => setIsFocused(false)}
-                  placeholder={`TC01: Verify Application Login Flow
-Step 1: Navigate to "https://your-website.com/login"
-Step 2: Enter "your_username" into input "Username"
-Step 3: Enter "your_password" into input "Password"
-Step 4: Click the "Sign In" button
-Expected Result: Verify success message "Dashboard Welcome" exists`}
-                  className="flex-1 p-4 bg-transparent text-base sm:text-lg font-mono text-zinc-100 placeholder-zinc-700/80 focus:outline-none leading-relaxed resize-y min-h-[300px] z-10"
-                />
-              </div>
+                {/* FIELD 2: Description */}
+                <div className="flex gap-0 group">
+                  <div className="w-1.5 bg-purple-500/40 group-focus-within:bg-purple-500 transition-colors shrink-0" />
+                  <div className="flex-1 px-5 py-4 flex flex-col gap-1.5">
+                    <label className="text-[10px] sm:text-xs font-bold uppercase tracking-widest text-purple-400 flex items-center gap-1.5">
+                      <span className="h-4 w-4 rounded bg-purple-500/15 border border-purple-500/30 text-purple-400 flex items-center justify-center text-[9px] font-black">2</span>
+                      Description
+                      <span className="text-zinc-600 font-normal normal-case tracking-normal ml-1">— what this test verifies (not executed)</span>
+                    </label>
+                    <textarea
+                      value={testDescription}
+                      onChange={e => setTestDescription(e.target.value)}
+                      placeholder="e.g. This test ensures a registered user can authenticate successfully using their email and password, and is redirected to the secure dashboard."
+                      rows={2}
+                      className="bg-transparent text-sm sm:text-base text-zinc-300 placeholder-zinc-600 focus:outline-none resize-none leading-relaxed w-full"
+                    />
+                  </div>
+                </div>
 
-              {/* Editor Footer */}
-              <div className="px-6 py-4 border-t border-zinc-800/80 bg-[#090d16]/40 flex items-center justify-between text-sm sm:text-base font-mono text-zinc-500">
-                <span>UTF-8 LINE {lineCount}, COL 22</span>
-                <span>CHARS: {charCount} / 5000</span>
-              </div>
+                {/* FIELD 3: Automation Steps — code editor with line numbers */}
+                <div className="flex gap-0 group flex-col">
+                  <div className="flex gap-0 flex-1">
+                    <div className="w-1.5 bg-emerald-500/40 group-focus-within:bg-emerald-500 transition-colors shrink-0" />
+                    <div className="flex-1 px-5 pt-4 pb-2 flex flex-col gap-1.5">
+                      <label className="text-[10px] sm:text-xs font-bold uppercase tracking-widest text-emerald-400 flex items-center gap-1.5">
+                        <span className="h-4 w-4 rounded bg-emerald-500/15 border border-emerald-500/30 text-emerald-400 flex items-center justify-center text-[9px] font-black">3</span>
+                        Automation Steps
+                        <span className="text-zinc-600 font-normal normal-case tracking-normal ml-1">— one step per line, executed in order</span>
+                      </label>
+                    </div>
+                  </div>
 
+                  {/* Code editor with line numbers */}
+                  <div className="relative flex min-h-[220px] bg-[#090d16]/50 overflow-hidden border-t border-zinc-800/40">
+                    {!stepsText && !isFocused && (
+                      <div className="absolute inset-0 flex items-center justify-center pointer-events-none text-xs font-bold text-zinc-700 tracking-widest uppercase gap-2 select-none">
+                        <Upload className="h-4 w-4 text-zinc-700" />
+                        Drag and drop .TCE files or type steps below
+                      </div>
+                    )}
+                    {/* Line numbers */}
+                    <div className="w-12 bg-zinc-950/20 text-right pr-3 py-4 border-r border-[#1c253c]/30 font-mono text-xs text-zinc-700 select-none leading-relaxed flex flex-col shrink-0">
+                      {Array.from({ length: Math.max(lineCount, 10) }).map((_, i) => (
+                        <div key={i}>{String(i + 1).padStart(2, '0')}</div>
+                      ))}
+                    </div>
+                    <textarea
+                      ref={textareaRef}
+                      value={stepsText}
+                      onChange={e => setStepsText(e.target.value)}
+                      onFocus={() => setIsFocused(true)}
+                      onBlur={() => setIsFocused(false)}
+                      placeholder={`Navigate to "https://your-website.com/login"\nEnter "your_email@example.com" into input "email"\nEnter "your_password" into input "password"\nClick the "Sign In" button`}
+                      className="flex-1 p-4 bg-transparent text-sm sm:text-base font-mono text-zinc-100 placeholder-zinc-700/70 focus:outline-none leading-relaxed resize-y min-h-[220px] z-10"
+                    />
+                  </div>
+                  {/* Steps footer */}
+                  <div className="px-5 py-2.5 bg-[#090d16]/30 border-t border-zinc-800/60 flex items-center justify-between text-[10px] sm:text-xs font-mono text-zinc-600">
+                    <span className="flex items-center gap-2">
+                      <span className="h-1.5 w-1.5 rounded-full bg-emerald-500/60" />
+                      {lineCount} step{lineCount !== 1 ? 's' : ''} · UTF-8
+                    </span>
+                    <span>{charCount} / 5000 chars</span>
+                  </div>
+                </div>
+
+                {/* FIELD 4: Expected Result */}
+                <div className="flex gap-0 group">
+                  <div className="w-1.5 bg-amber-500/40 group-focus-within:bg-amber-500 transition-colors shrink-0 rounded-bl-2xl" />
+                  <div className="flex-1 px-5 py-4 flex flex-col gap-1.5">
+                    <label className="text-[10px] sm:text-xs font-bold uppercase tracking-widest text-amber-400 flex items-center gap-1.5">
+                      <span className="h-4 w-4 rounded bg-amber-500/15 border border-amber-500/30 text-amber-400 flex items-center justify-center text-[9px] font-black">4</span>
+                      Expected Result
+                      <span className="text-zinc-600 font-normal normal-case tracking-normal ml-1">— assertion / verification to run at the end</span>
+                    </label>
+                    <textarea
+                      value={expectedResult}
+                      onChange={e => setExpectedResult(e.target.value)}
+                      placeholder={`Verify success message "Welcome to the dashboard" exists\nVerify URL contains "/dashboard"\nVerify element "Logout button" is visible`}
+                      rows={3}
+                      className="bg-transparent text-sm sm:text-base font-mono text-amber-100/80 placeholder-zinc-600 focus:outline-none resize-none leading-relaxed w-full"
+                    />
+                  </div>
+                </div>
+
+              </div>
             </div>
 
             {/* Right: Parameter Toggles & Environment summary */}
@@ -691,7 +921,11 @@ Expected Result: Verify success message "Dashboard Welcome" exists`}
             </div>
 
             <div className="flex items-center gap-3">
-              <button className="px-4.5 py-2.5 rounded-xl border border-zinc-800 bg-zinc-900/60 text-rose-400 hover:bg-zinc-900 text-sm sm:text-base font-bold transition-all flex items-center gap-1.5">
+              <button
+                type="button"
+                onClick={handleAbortRun}
+                className="px-4.5 py-2.5 rounded-xl border border-zinc-800 bg-zinc-900/60 text-rose-400 hover:bg-zinc-900 text-sm sm:text-base font-bold transition-all flex items-center gap-1.5 cursor-pointer"
+              >
                 Abort Run
               </button>
               <button className="px-4.5 py-2.5 rounded-xl border border-zinc-850 bg-zinc-900/40 text-zinc-400 hover:text-white text-sm sm:text-base font-bold transition-all">
@@ -885,7 +1119,7 @@ Expected Result: Verify success message "Dashboard Welcome" exists`}
           </div>
 
           {/* Metrics overview */}
-          <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+          <div className="grid grid-cols-2 md:grid-cols-5 gap-4">
             {[
               { label: 'Total Steps', val: String(stepResults.length), color: 'text-white', rate: null },
               {
@@ -899,6 +1133,12 @@ Expected Result: Verify success message "Dashboard Welcome" exists`}
                 val: String(stepResults.filter(s => s.status === 'failed').length),
                 color: 'text-rose-400',
                 rate: stepResults.length > 0 ? `${((stepResults.filter(s => s.status === 'failed').length / stepResults.length) * 100).toFixed(1)}%` : '0.0%'
+              },
+              {
+                label: 'Skipped',
+                val: String(stepResults.filter(s => s.status === 'skipped').length),
+                color: 'text-zinc-400',
+                rate: stepResults.length > 0 ? `${((stepResults.filter(s => s.status === 'skipped').length / stepResults.length) * 100).toFixed(1)}%` : '0.0%'
               },
               { label: 'Duration', val: `${(runDuration / 1000).toFixed(2)}s`, color: 'text-purple-400', rate: null },
             ].map((card, idx) => (
@@ -946,12 +1186,23 @@ Expected Result: Verify success message "Dashboard Welcome" exists`}
                 </thead>
                 <tbody className="divide-y divide-zinc-900/50 text-sm sm:text-base font-semibold text-zinc-300">
                   {stepResults.map((r) => {
-                    const isPass = r.status === 'passed';
                     return (
                       <tr key={r.stepIndex} className="hover:bg-zinc-900/10 transition-colors">
                         <td className="px-6 py-4">
-                          <span className={`inline-flex items-center gap-1.5 text-xs sm:text-sm font-bold ${isPass ? 'text-emerald-400' : 'text-rose-400'}`}>
-                            <span className={`h-2 w-2 rounded-full ${isPass ? 'bg-emerald-500' : 'bg-rose-500'}`}></span>
+                          <span className={`inline-flex items-center gap-1.5 text-xs sm:text-sm font-bold ${
+                            r.status === 'passed'
+                              ? 'text-emerald-400'
+                              : r.status === 'skipped'
+                                ? 'text-zinc-500'
+                                : 'text-rose-400'
+                          }`}>
+                            <span className={`h-2 w-2 rounded-full ${
+                              r.status === 'passed'
+                                ? 'bg-emerald-500'
+                                : r.status === 'skipped'
+                                  ? 'bg-zinc-500'
+                                  : 'bg-rose-500'
+                            }`}></span>
                             {r.status.toUpperCase()}
                           </span>
                         </td>
@@ -1009,14 +1260,14 @@ Expected Result: Verify success message "Dashboard Welcome" exists`}
           {/* Overlay click to close */}
           <div className="absolute inset-0" onClick={() => setSelectedFailedStep(null)}></div>
           
-          <div className="relative w-full max-w-lg bg-zinc-950 border-l border-zinc-800 h-full shadow-2xl flex flex-col p-6 overflow-y-auto animate-slide-in">
+          <div className="relative w-full max-w-2xl bg-zinc-950 border-l border-zinc-800 h-full shadow-2xl flex flex-col p-6 overflow-y-auto animate-slide-in">
             {/* Close Button Header */}
             <div className="flex items-center justify-between border-b border-zinc-900 pb-4 mb-6">
               <div className="flex items-center gap-3">
                 <span className="h-8 w-8 rounded bg-zinc-900 border border-zinc-800 flex items-center justify-center font-mono text-sm text-zinc-400">{selectedFailedStep.stepIndex}</span>
                 <div>
                   <h3 className="text-base sm:text-lg font-bold text-white">Execution Step Audit</h3>
-                  <p className="text-xs sm:text-sm text-zinc-500 font-mono truncate max-w-[280px]">{selectedFailedStep.rawText}</p>
+                  <p className="text-xs sm:text-sm text-zinc-500 font-mono truncate max-w-[340px]">{selectedFailedStep.rawText}</p>
                 </div>
               </div>
               <button
@@ -1027,76 +1278,285 @@ Expected Result: Verify success message "Dashboard Welcome" exists`}
               </button>
             </div>
 
-            {/* Step Status summary */}
-            <div className="flex flex-col gap-6">
-              <div className="flex justify-between items-center bg-zinc-900/20 p-4 rounded-xl border border-zinc-900">
-                <span className="text-sm sm:text-base font-semibold text-zinc-400">Step Status Outcome</span>
-                <span className={`px-3 py-1 rounded text-xs font-bold ${
-                  selectedFailedStep.status === 'passed' ? 'bg-emerald-500/10 text-emerald-400' : 'bg-rose-500/10 text-rose-400'
-                }`}>
-                  {selectedFailedStep.status.toUpperCase()}
-                </span>
-              </div>
-
-              {/* Dynamic expected vs actual results (High fidelity drawer assertions V1) */}
-              {selectedFailedStep.status === 'failed' && (
-                <div className="flex flex-col gap-4 border border-zinc-900/60 bg-zinc-900/10 p-5 rounded-2xl">
-                  <div className="flex flex-col gap-1.5">
-                    <span className="text-xs sm:text-sm uppercase font-bold text-zinc-500 tracking-wider">Expected Assertion Result</span>
-                    <p className="text-sm sm:text-base text-zinc-300 leading-relaxed bg-zinc-950 p-2.5 rounded-lg border border-zinc-900 font-medium">
-                      {selectedFailedStep.expectedResult || "Expected validation text was not matched in target selectors."}
-                    </p>
-                  </div>
-
-                  <div className="flex flex-col gap-1.5">
-                    <span className="text-xs sm:text-sm uppercase font-bold text-zinc-500 tracking-wider">Actual Assertion Result</span>
-                    <p className="text-sm sm:text-base text-rose-400 leading-relaxed bg-rose-500/5 p-2.5 rounded-lg border border-rose-500/10 font-medium">
-                      {selectedFailedStep.actualResult || "Target element did not load within threshold parameters."}
-                    </p>
-                  </div>
-                </div>
-              )}
-
-              {/* Specific error details block */}
-              {selectedFailedStep.error && (
-                <div className="flex flex-col gap-1.5">
-                  <span className="text-xs sm:text-sm uppercase font-bold text-zinc-500 tracking-wider">Error Details Log</span>
-                  <div className="bg-rose-500/10 border border-rose-500/25 p-3.5 rounded-xl text-xs sm:text-sm font-mono text-rose-400 leading-normal">
-                    {selectedFailedStep.error}
-                  </div>
-                </div>
-              )}
-
-              {/* Screenshot Preview */}
-              {selectedFailedStep.screenshot && (
-                <div className="flex flex-col gap-1.5">
-                  <span className="text-xs sm:text-sm uppercase font-bold text-zinc-500 tracking-wider">Step Visual Screenshot Evidence</span>
-                  <div className="border border-zinc-900 bg-zinc-950 rounded-xl overflow-hidden">
-                    <div className="flex items-center gap-1.5 text-xs sm:text-sm font-mono text-zinc-500 px-3 py-1.5 border-b border-zinc-900 uppercase font-bold tracking-wider">
-                      <Image className="h-4 w-4 text-blue-500" />
-                      Visual Snapshot
-                    </div>
-                    <a href={selectedFailedStep.screenshot} target="_blank" rel="noreferrer" className="block hover:opacity-90 transition-opacity">
-                      <img src={selectedFailedStep.screenshot} alt={`Step ${selectedFailedStep.stepIndex} screenshot`} className="w-full h-auto object-cover max-h-64" />
-                    </a>
-                  </div>
-                </div>
-              )}
-
-              {/* Console log outputs stream */}
-              {selectedFailedStep.consoleLogs && selectedFailedStep.consoleLogs.length > 0 && (
-                <div className="flex flex-col gap-1.5">
-                  <span className="text-xs sm:text-sm uppercase font-bold text-zinc-500 tracking-wider">Step Console Output Stream</span>
-                  <div className="border border-zinc-900 bg-zinc-950 rounded-xl overflow-hidden font-mono text-xs sm:text-sm leading-relaxed">
-                    {selectedFailedStep.consoleLogs.map((log, idx) => (
-                      <div key={idx} className="px-3.5 py-2 border-b border-zinc-900 last:border-0 text-zinc-400">
-                        {log}
-                      </div>
-                    ))}
-                  </div>
-                </div>
-              )}
+            {/* Tabs Navigation */}
+            <div className="flex border-b border-zinc-900 mb-6 gap-2 text-xs sm:text-sm">
+              {[
+                { id: 'details', name: 'Details & Logs' },
+                { id: 'video', name: 'Video Playback' },
+                { id: 'network', name: 'Network Waterfall' }
+              ].map(t => (
+                <button
+                  key={t.id}
+                  type="button"
+                  onClick={() => setActiveAuditTab(t.id as any)}
+                  className={`px-3.5 py-2 font-bold transition-all border-b-2 -mb-px ${
+                    activeAuditTab === t.id
+                      ? 'border-purple-500 text-purple-400'
+                      : 'border-transparent text-zinc-500 hover:text-zinc-300'
+                  }`}
+                >
+                  {t.name}
+                </button>
+              ))}
             </div>
+
+            {/* TAB CONTENTS */}
+            <div className="flex-1 flex flex-col gap-5">
+              
+              {/* TAB 1: DETAILS & LOGS */}
+              {activeAuditTab === 'details' && (
+                <div className="flex flex-col gap-6">
+                  <div className="flex justify-between items-center bg-zinc-900/20 p-4 rounded-xl border border-zinc-900">
+                    <span className="text-sm font-semibold text-zinc-400">Step Status Outcome</span>
+                    <span className={`px-3 py-1 rounded text-xs font-bold ${
+                      selectedFailedStep.status === 'passed' 
+                        ? 'bg-emerald-500/10 text-emerald-400' 
+                        : selectedFailedStep.status === 'skipped'
+                          ? 'bg-zinc-500/10 text-zinc-400 border border-zinc-800'
+                          : 'bg-rose-500/10 text-rose-400'
+                    }`}>
+                      {selectedFailedStep.status.toUpperCase()}
+                    </span>
+                  </div>
+
+                  {selectedFailedStep.status === 'failed' && (
+                    <div className="flex flex-col gap-4 border border-zinc-900/60 bg-zinc-900/10 p-5 rounded-2xl">
+                      <div className="flex flex-col gap-1.5">
+                        <span className="text-xs uppercase font-bold text-zinc-500 tracking-wider">Expected Assertion Result</span>
+                        <p className="text-sm text-zinc-300 leading-relaxed bg-zinc-950 p-2.5 rounded-lg border border-zinc-900 font-medium">
+                          {selectedFailedStep.expectedResult || "Expected validation text was not matched in target selectors."}
+                        </p>
+                      </div>
+
+                      <div className="flex flex-col gap-1.5">
+                        <span className="text-xs uppercase font-bold text-zinc-500 tracking-wider">Actual Assertion Result</span>
+                        <p className="text-sm text-rose-400 leading-relaxed bg-rose-500/5 p-2.5 rounded-lg border border-rose-500/10 font-medium">
+                          {selectedFailedStep.actualResult || "Target element did not load within threshold parameters."}
+                        </p>
+                      </div>
+                    </div>
+                  )}
+
+                  {selectedFailedStep.error && (
+                    <div className="flex flex-col gap-1.5">
+                      <span className="text-xs uppercase font-bold text-zinc-500 tracking-wider">Error Details Log</span>
+                      <div className="bg-rose-500/10 border border-rose-500/25 p-3.5 rounded-xl text-xs font-mono text-rose-400 leading-normal">
+                        {selectedFailedStep.error}
+                      </div>
+                    </div>
+                  )}
+
+                  <div className="flex flex-col gap-3">
+                    <div className="flex items-center justify-between gap-4">
+                      <span className="text-xs uppercase font-bold text-zinc-505 tracking-wider">Step Execution Logs</span>
+                      <select 
+                        value={logFilter}
+                        onChange={e => setLogFilter(e.target.value as any)}
+                        className="bg-zinc-900 border border-zinc-800 rounded px-2.5 py-1 text-xs text-zinc-300 focus:outline-none"
+                      >
+                        <option value="all">All Logs</option>
+                        <option value="info">Info / Success</option>
+                        <option value="debug">Debug / Discovery</option>
+                        <option value="error">Errors</option>
+                      </select>
+                    </div>
+
+                    <div className="border border-zinc-900 bg-zinc-950 rounded-xl overflow-hidden font-mono text-xs leading-relaxed max-h-[300px] overflow-y-auto">
+                      {(selectedFailedStep.consoleLogs || []).filter(log => {
+                        if (logFilter === 'all') return true;
+                        if (logFilter === 'info') return log.includes('INFO') || log.includes('SUCCESS') || log.includes('Starting');
+                        if (logFilter === 'debug') return log.includes('DEBUG') || log.includes('SCAN') || log.includes('Resolved') || log.includes('Scanning');
+                        if (logFilter === 'error') return log.includes('ERROR') || log.includes('FAILURE') || log.includes('FATAL');
+                        return true;
+                      }).map((log, idx) => {
+                        let logColor = 'text-zinc-400';
+                        if (log.includes('SUCCESS') || log.includes('passed')) logColor = 'text-emerald-400';
+                        if (log.includes('ERROR') || log.includes('FAILURE')) logColor = 'text-rose-400';
+                        if (log.includes('SCAN') || log.includes('Scanning')) logColor = 'text-zinc-500';
+                        return (
+                          <div key={idx} className={`px-3.5 py-2 border-b border-zinc-900 last:border-0 ${logColor}`}>
+                            {log}
+                          </div>
+                        );
+                      })}
+                      {(!selectedFailedStep.consoleLogs || selectedFailedStep.consoleLogs.length === 0) && (
+                        <div className="p-4 text-center text-zinc-650 text-xs">No logs recorded for this step.</div>
+                      )}
+                    </div>
+                  </div>
+
+                  {selectedFailedStep.status === 'failed' && (
+                    <button
+                      type="button"
+                      onClick={generateBugReport}
+                      className="w-full py-4.5 bg-rose-600 hover:bg-rose-500 text-white rounded-xl font-bold transition-all shadow-lg shadow-rose-500/10 flex items-center justify-center gap-2 select-none cursor-pointer mt-4"
+                    >
+                      <ShieldAlert className="h-5.5 w-5.5" />
+                      Generate Bug Report
+                    </button>
+                  )}
+                </div>
+              )}
+
+              {/* TAB 2: VIDEO PLAYBACK (renumbered from 3) */}
+
+              {activeAuditTab === 'video' && (
+                <div className="flex flex-col gap-4">
+                  {videoPath ? (
+                    <div className="flex flex-col gap-4">
+                      <video src={videoPath} controls className="w-full rounded-xl border border-zinc-800 bg-black aspect-video shadow-2xl" />
+                      <div className="bg-zinc-900/20 border border-zinc-900 rounded-xl p-4.5 text-xs sm:text-sm text-zinc-400 font-mono leading-relaxed">
+                        <p className="font-bold text-zinc-350">Video File Details</p>
+                        <p className="mt-1 break-all text-zinc-500">Route: {videoPath}</p>
+                      </div>
+                    </div>
+                  ) : (
+                    <div className="p-16 text-center text-zinc-600 border border-dashed border-zinc-850 bg-zinc-950/20 rounded-2xl flex flex-col items-center justify-center gap-4">
+                      <PlayCircle className="h-12 w-12 text-zinc-700 animate-pulse" />
+                      <div>
+                        <h4 className="font-bold text-white text-sm">No Video Recording Captured</h4>
+                        <p className="text-xs text-zinc-550 mt-1 max-w-xs">
+                          Activate "Video Capture Mode" in settings to record full page browser interactions for troubleshooting.
+                        </p>
+                      </div>
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {/* TAB 3: NETWORK WATERFALL */}
+              {activeAuditTab === 'network' && (
+                <div className="flex flex-col gap-4">
+                  {networkRequests && networkRequests.length > 0 ? (
+                    (() => {
+                      const firstReqTime = Math.min(...networkRequests.map(r => new Date(r.timestamp).getTime()));
+                      const lastReqTime = Math.max(...networkRequests.map(r => new Date(r.timestamp).getTime() + r.durationMs));
+                      const totalDuration = lastReqTime - firstReqTime || 1;
+
+                      return (
+                        <div className="flex flex-col gap-4">
+                          <div className="flex items-center justify-between text-xs font-mono text-zinc-500 border-b border-zinc-900 pb-2">
+                            <span>Endpoint URL</span>
+                            <span>Timeline Waterfall ({totalDuration}ms)</span>
+                          </div>
+                          <div className="flex flex-col gap-3.5 max-h-[420px] overflow-y-auto pr-1">
+                            {networkRequests.map((req, idx) => {
+                              const reqStart = new Date(req.timestamp).getTime();
+                              const startOffset = reqStart - firstReqTime;
+                              const leftPercent = (startOffset / totalDuration) * 100;
+                              const widthPercent = (req.durationMs / totalDuration) * 100;
+                              const isSuccess = req.status >= 200 && req.status < 400;
+
+                              return (
+                                <div key={idx} className="flex flex-col gap-1.5 border-b border-zinc-900/30 pb-2.5 last:border-0">
+                                  <div className="flex justify-between items-start gap-3 text-[11px] font-mono">
+                                    <span className="truncate text-zinc-300 font-semibold max-w-[280px]" title={req.url}>
+                                      {req.method} {req.url.replace(/^https?:\/\/[^\/]+/i, '') || '/'}
+                                    </span>
+                                    <span className={`font-bold shrink-0 ${isSuccess ? 'text-emerald-400' : 'text-rose-400'}`}>
+                                      {req.status || 'FAIL'}
+                                    </span>
+                                  </div>
+                                  
+                                  {/* Bar diagram */}
+                                  <div className="w-full bg-zinc-950 h-3.5 rounded overflow-hidden flex relative border border-zinc-900/60">
+                                    <div style={{ width: `${leftPercent}%` }} className="shrink-0"></div>
+                                    <div 
+                                      style={{ width: `${Math.max(widthPercent, 1.5)}%` }} 
+                                      className={`h-full rounded-sm ${isSuccess ? 'bg-purple-600/60 border border-purple-500/20' : 'bg-rose-600/60 border border-rose-500/20'}`}
+                                      title={`Duration: ${req.durationMs}ms`}
+                                    ></div>
+                                    <span className="absolute right-2 top-0 text-[9px] text-zinc-550 font-mono leading-none flex items-center h-full">
+                                      {req.durationMs}ms
+                                    </span>
+                                  </div>
+                                </div>
+                              );
+                            })}
+                          </div>
+                        </div>
+                      );
+                    })()
+                  ) : (
+                    <div className="p-16 text-center text-zinc-650 border border-dashed border-zinc-850 bg-zinc-950/20 rounded-2xl flex flex-col items-center justify-center gap-4 animate-pulse">
+                      <Globe className="h-12 w-12 text-zinc-705" />
+                      <div>
+                        <h4 className="font-bold text-white text-sm">No Network Telemetry Discovered</h4>
+                        <p className="text-xs text-zinc-550 mt-1 max-w-xs">
+                          Enable "Capture Network Logs" in configurations before launching browser automation execution.
+                        </p>
+                      </div>
+                    </div>
+                  )}
+                </div>
+              )}
+
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* 5. DYNAMIC GENERATIVE BUG REPORT MODAL */}
+      {showBugReport && (
+        <div className="fixed inset-0 z-55 bg-black/70 backdrop-blur-md flex items-center justify-center p-4">
+          <div className="relative w-full max-w-3xl bg-zinc-950 border border-zinc-800 rounded-3xl overflow-hidden shadow-2xl flex flex-col p-6 max-h-[85vh] animate-fade-in text-[#f9fafb]">
+
+            {/* Modal Header */}
+            <div className="flex items-center justify-between border-b border-zinc-900 pb-4 mb-4">
+              <div className="flex items-center gap-3">
+                <ShieldAlert className="h-6 w-6 text-rose-500" />
+                <div>
+                  <h3 className="text-base sm:text-lg font-bold text-white">Generative Bug Report Evidence</h3>
+                  <p className="text-xs sm:text-sm text-zinc-500">Copy this pre-formatted markdown bug report for JIRA/Github issues.</p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => {
+                  setShowBugReport(false);
+                  setBugCopied(false);
+                }}
+                className="h-8.5 w-8.5 rounded-lg hover:bg-zinc-900 border border-zinc-850 flex items-center justify-center text-zinc-500 hover:text-white transition-all"
+              >
+                <X className="h-4.5 w-4.5" />
+              </button>
+            </div>
+
+            {/* Scrollable markdown text */}
+            <div className="overflow-y-auto flex-1 bg-zinc-900/40 p-5 rounded-2xl border border-zinc-900/80 font-mono text-xs sm:text-sm text-zinc-300 leading-relaxed max-h-[50vh]">
+              <pre className="whitespace-pre-wrap select-all">{bugReportContent}</pre>
+            </div>
+
+            {/* Actions footer */}
+            <div className="flex items-center justify-between border-t border-zinc-900 pt-4 mt-4 text-xs sm:text-sm font-mono text-zinc-500">
+              <span className="flex items-center gap-1.5 font-bold text-rose-400">
+                <Sparkles className="h-5 w-5" />
+                Bug report parsed with high-fidelity evidence
+              </span>
+              <div className="flex gap-3">
+                {generatedScriptPath && (
+                  <a
+                    href={generatedScriptPath}
+                    download
+                    className="px-5 py-3 border border-blue-500/20 bg-blue-500/5 hover:bg-blue-500/10 text-blue-400 rounded-xl font-bold text-xs sm:text-sm transition-all"
+                  >
+                    Download Spec / Script
+                  </a>
+                )}
+                <button
+                  type="button"
+                  onClick={() => {
+                    navigator.clipboard.writeText(bugReportContent);
+                    setBugCopied(true);
+                    setTimeout(() => setBugCopied(false), 2000);
+                  }}
+                  className="px-5 py-3 bg-rose-600 hover:bg-rose-500 rounded-xl font-bold text-white text-xs sm:text-sm transition-all cursor-pointer shadow-md flex items-center gap-2"
+                >
+                  {bugCopied ? 'Copied Successfully!' : 'Copy Bug Report'}
+                </button>
+              </div>
+            </div>
+
           </div>
         </div>
       )}

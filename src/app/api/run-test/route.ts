@@ -26,6 +26,7 @@ export async function POST(request: NextRequest) {
       deviceMode,
       maxWorkers,
       config,
+      runId,
     } = validation.data;
 
     // Parse test suites — splits on TC headers for multi-TC runs
@@ -55,6 +56,7 @@ export async function POST(request: NextRequest) {
       browser,
       deviceMode,
       maxWorkers,
+      runId,
     });
 
     const failedCount = context.stepResults.filter((s) => s.status === 'failed').length;
@@ -100,8 +102,11 @@ export async function POST(request: NextRequest) {
         resolvedSelector: r.resolvedSelector,
         screenshot: r.screenshotPath,
         error: r.error,
+        consoleLogs: r.logs,
       })),
       generatedScriptPath: context.generatedScriptPath,
+      videoPath: context.testSuiteResults?.[0]?.videoPath,
+      networkRequests: context.networkRequests,
       // Per-TC suite summary
       testSuites: (context.testSuiteResults ?? []).map((ts) => ({
         tcId: ts.tcId,
@@ -112,6 +117,11 @@ export async function POST(request: NextRequest) {
       })),
     };
 
+    // Clean up live activeLogs from memory after run finishes
+    if ((globalThis as any).activeLogs && runId) {
+      delete (globalThis as any).activeLogs[runId];
+    }
+
     return NextResponse.json(responsePayload, { status: 200 });
   } catch (err: any) {
     return NextResponse.json(
@@ -121,5 +131,19 @@ export async function POST(request: NextRequest) {
       },
       { status: 500 },
     );
+  }
+}
+
+export async function GET(request: NextRequest) {
+  try {
+    const searchParams = request.nextUrl.searchParams;
+    const runId = searchParams.get('runId');
+    if (!runId) {
+      return NextResponse.json({ error: 'runId is required' }, { status: 400 });
+    }
+    const logs = (globalThis as any).activeLogs?.[runId] || [];
+    return NextResponse.json({ logs }, { status: 200 });
+  } catch (err: any) {
+    return NextResponse.json({ error: err?.message || 'Error fetching active logs' }, { status: 500 });
   }
 }

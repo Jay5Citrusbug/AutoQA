@@ -47,3 +47,14 @@ node_modules/
 /blob-report/
 /playwright/.cache/
 /playwright/.auth/
+
+# AutoQA Execution Artifacts & Generated Files
+/screenshots/
+/videos/
+/logs/
+/test-runs/
+/generated-tests/
+/reports/
+/public/reports/
+/public/screenshots/
+/public/generated-tests/

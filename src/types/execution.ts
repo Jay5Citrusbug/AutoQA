@@ -4,7 +4,8 @@ import { BrowserEngine, DeviceMode } from './mvp';
 export interface DiscoveryMatch {
   selector: string;
   score: number;
-  strategy: 'role' | 'label' | 'placeholder' | 'name' | 'id' | 'css' | 'fallback';
+  /** Signal name from scoring engine (e.g. 'aria-label:exact', 'type-inference:input[type=email]', 'fallback') */
+  strategy: string;
   tagName: string;
   attributes: Record<string, string>;
 }
@@ -39,6 +40,15 @@ export interface NetworkErrorRecord {
   timestamp: string;
 }
 
+export interface NetworkRequestRecord {
+  url: string;
+  method: string;
+  status: number;
+  contentType: string;
+  durationMs: number;
+  timestamp: string;
+}
+
 // Represents a single parsed test case block (TC01, TC02, etc.)
 export interface TestSuite {
   id: string;          // e.g. "TC01"
@@ -61,6 +71,7 @@ export interface ExecutionContext {
   stepResults: StepExecutionResult[];
   consoleLogs: ConsoleMessageRecord[];
   networkErrors: NetworkErrorRecord[];
+  networkRequests?: NetworkRequestRecord[];
   generatedScriptPath?: string;
   // Per-TC grouped results (when multiple TCs are run)
   testSuiteResults?: TestSuiteResult[];
@@ -73,4 +84,6 @@ export interface TestSuiteResult {
   durationMs: number;
   stepResults: StepExecutionResult[];
   generatedScriptPath?: string;
+  videoPath?: string;
+  networkRequests?: NetworkRequestRecord[];
 }

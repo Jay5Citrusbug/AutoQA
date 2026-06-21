@@ -4,6 +4,7 @@ import React, { useEffect, useState } from 'react';
 import Link from 'next/link';
 import { History, ClipboardList, CheckCircle, XCircle, ArrowUpRight, Clock, HelpCircle } from 'lucide-react';
 import { ReportSummary } from '@/types/report';
+import SafeFormattedDate from '@/components/SafeFormattedDate';
 
 export default function HistoryPage() {
   const [runs, setRuns] = useState<ReportSummary[]>([]);
@@ -92,7 +93,7 @@ export default function HistoryPage() {
                       {((run.durationMs || 0) / 1000).toFixed(2)}s
                     </td>
                     <td className="px-6 py-4.5 text-zinc-500 font-mono">
-                      {new Date(run.timestamp).toLocaleString()}
+                      <SafeFormattedDate value={run.timestamp} />
                     </td>
                     <td className="px-6 py-4.5 text-right">
                       <div className="flex items-center justify-end gap-3">

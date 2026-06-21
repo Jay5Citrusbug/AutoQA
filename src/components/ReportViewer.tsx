@@ -3,6 +3,7 @@
 import React from 'react';
 import { FileCode, FileText, LayoutList, CheckCircle, AlertOctagon, Terminal, Globe, ChevronRight } from 'lucide-react';
 import { ReportPayload } from '@/types/report';
+import SafeFormattedDate from './SafeFormattedDate';
 
 interface ReportViewerProps {
   payload: ReportPayload;
@@ -27,7 +28,7 @@ export default function ReportViewer({ payload }: ReportViewerProps) {
           <div className={`h-4.5 w-4.5 rounded-full ${s.status === 'passed' ? 'bg-emerald-500 animate-pulse' : 'bg-rose-500'}`}></div>
           <div>
             <h2 className="text-xl font-bold text-white">Report Run Details</h2>
-            <p className="text-xs text-zinc-500 font-mono mt-0.5">{s.url} | Completed {new Date(s.timestamp).toLocaleString()}</p>
+            <p className="text-xs text-zinc-500 font-mono mt-0.5">{s.url} | Completed <SafeFormattedDate value={s.timestamp} /></p>
           </div>
         </div>
 
@@ -138,7 +139,7 @@ export default function ReportViewer({ payload }: ReportViewerProps) {
                 const colors = l.type === 'error' ? 'text-rose-400 bg-rose-500/5' : l.type === 'warn' ? 'text-amber-400 bg-amber-500/5' : 'text-zinc-300';
                 return (
                   <div key={idx} className={`px-4 py-2 border-b border-zinc-900/30 flex items-start gap-3 ${colors}`}>
-                    <span className="text-zinc-600 select-none">[{new Date(l.timestamp).toLocaleTimeString()}]</span>
+                    <span className="text-zinc-600 select-none">[<SafeFormattedDate value={l.timestamp} format="time" />]</span>
                     <span className="font-bold tracking-wider select-none uppercase">[{l.type}]</span>
                     <span className="break-all flex-1">{l.text}</span>
                   </div>
@@ -162,7 +163,7 @@ export default function ReportViewer({ payload }: ReportViewerProps) {
               {d.networkErrors.map((n, idx) => (
                 <div key={idx} className="px-4 py-3 border-b border-zinc-900/30 flex flex-col sm:flex-row sm:items-center justify-between gap-3 text-rose-400 bg-rose-500/5">
                   <div className="flex items-start gap-3">
-                    <span className="text-zinc-600 select-none">[{new Date(n.timestamp).toLocaleTimeString()}]</span>
+                    <span className="text-zinc-600 select-none">[<SafeFormattedDate value={n.timestamp} format="time" />]</span>
                     <span className="font-bold tracking-wider select-none uppercase">[{n.method}]</span>
                     <span className="break-all">{n.url}</span>
                   </div>

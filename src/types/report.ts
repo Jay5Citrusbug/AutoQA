@@ -10,6 +10,7 @@ export interface ReportSummary {
   totalSteps: number;
   passedSteps: number;
   failedSteps: number;
+  skippedSteps: number;
   durationMs: number;
   status: 'passed' | 'failed';
 }

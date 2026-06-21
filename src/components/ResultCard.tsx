@@ -3,6 +3,7 @@
 import React from 'react';
 import { CheckCircle2, XCircle, FileJson, FileCode, Clock, Clipboard, ClipboardCheck, ArrowUpRight } from 'lucide-react';
 import { ExecutionContext } from '@/types/execution';
+import { useFormattedDate } from '@/hooks/useFormattedDate';
 
 interface ResultCardProps {
   context: ExecutionContext;
@@ -10,10 +11,12 @@ interface ResultCardProps {
 
 export default function ResultCard({ context }: ResultCardProps) {
   const [copied, setCopied] = React.useState(false);
+  const formattedTime = useFormattedDate(context.endTime, 'time');
 
   const total = context.stepResults.length;
   const passed = context.stepResults.filter((s) => s.status === 'passed').length;
   const failed = context.stepResults.filter((s) => s.status === 'failed').length;
+  const skipped = context.stepResults.filter((s) => s.status === 'skipped').length;
   const isSuccess = failed === 0;
 
   const handleCopyScriptPath = () => {
@@ -41,7 +44,7 @@ export default function ResultCard({ context }: ResultCardProps) {
             <h3 className="text-base font-bold text-white">
               {isSuccess ? 'Execution Passed' : 'Execution Failed'}
             </h3>
-            <p className="text-xs text-zinc-500 mt-0.5">Run Completed at {new Date(context.endTime || '').toLocaleTimeString()}</p>
+            <p className="text-xs text-zinc-500 mt-0.5">Run Completed at {formattedTime}</p>
           </div>
         </div>
         
@@ -72,6 +75,10 @@ export default function ResultCard({ context }: ResultCardProps) {
             <div className="flex justify-between items-center text-sm">
               <span className="text-zinc-500">Failed</span>
               <span className="font-semibold text-rose-400 font-mono">{failed}</span>
+            </div>
+            <div className="flex justify-between items-center text-sm">
+              <span className="text-zinc-500">Skipped</span>
+              <span className="font-semibold text-zinc-400 font-mono">{skipped}</span>
             </div>
             <div className="flex justify-between items-center text-sm border-t border-zinc-900 pt-2.5">
               <span className="text-zinc-500 flex items-center gap-1.5">

@@ -18,4 +18,9 @@ export interface TestCase {
   title: string;
   description?: string;
   steps: ParsedStep[];
+  stepsText: string;
+  websiteUrl?: string;
+  moduleName?: string;
+  createdAt: string;
+  updatedAt: string;
 }

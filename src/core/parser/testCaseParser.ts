@@ -85,16 +85,58 @@ export class TestCaseParser implements ITestCaseParser {
         return;
       }
 
-      // 4. FILL / TYPE VALUE INTO FIELD
-      match = cleanText.match(/^(?:enter|type|fill)\s+["']?([^"']+)["']?\s+(?:into|in|to)\s+(?:the\s+)?(?:input\s+)?["']?([^"']+)["']?/i);
-      if (match) {
+      // 4a. FILL: (enter|type|fill) [value] (into|in|to|on) [field]
+      let fillMatch = cleanText.match(/^(?:enter|type|fill)\s+["']?([^"']+)["']?\s+(?:into|in|to|on)\s+(?:the\s+)?(?:input\s+)?["']?([^"']+)["']?/i);
+      if (fillMatch) {
         parsedSteps.push({
           stepIndex,
           rawText: trimmed,
           type: 'action',
           action: 'fill',
-          targetField: this.cleanTargetField(match[2]),
-          value: match[1],
+          targetField: this.cleanTargetField(fillMatch[2]),
+          value: fillMatch[1],
+        });
+        return;
+      }
+
+      // 4b. FILL: (enter|type|fill) [field] [separator - or : or =] [value]
+      fillMatch = cleanText.match(/^(?:enter|type|fill)(?:\s+in|\s+into)?\s+["']?([^"'\x2d\x3a\x3d]+?)["']?\s*[\x2d\x3a\x3d]\s*["']?([^"']+)["']?/i);
+      if (fillMatch) {
+        parsedSteps.push({
+          stepIndex,
+          rawText: trimmed,
+          type: 'action',
+          action: 'fill',
+          targetField: this.cleanTargetField(fillMatch[1]),
+          value: fillMatch[2],
+        });
+        return;
+      }
+
+      // 4c. FILL: fill (in) [field] with [value]
+      fillMatch = cleanText.match(/^fill(?:\s+in)?\s+["']?([^"']+)["']?\s+with\s+["']?([^"']+)["']?/i);
+      if (fillMatch) {
+        parsedSteps.push({
+          stepIndex,
+          rawText: trimmed,
+          type: 'action',
+          action: 'fill',
+          targetField: this.cleanTargetField(fillMatch[1]),
+          value: fillMatch[2],
+        });
+        return;
+      }
+
+      // 4d. FILL: (enter|type|fill) [field] as [value]
+      fillMatch = cleanText.match(/^(?:enter|type|fill)\s+["']?([^"']+)["']?\s+as\s+["']?([^"']+)["']?/i);
+      if (fillMatch) {
+        parsedSteps.push({
+          stepIndex,
+          rawText: trimmed,
+          type: 'action',
+          action: 'fill',
+          targetField: this.cleanTargetField(fillMatch[1]),
+          value: fillMatch[2],
         });
         return;
       }

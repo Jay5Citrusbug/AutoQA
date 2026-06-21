@@ -7,6 +7,7 @@ import {
   XCircle, Filter, Download, ArrowRight, Eye, RefreshCw, X
 } from 'lucide-react';
 import { ReportSummary, ReportPayload } from '@/types/report';
+import SafeFormattedDate from '@/components/SafeFormattedDate';
 
 export default function ReportsPage() {
   const [reports, setReports] = useState<ReportSummary[]>([]);
@@ -166,7 +167,7 @@ export default function ReportsPage() {
                       <h4 className="font-bold text-white text-base sm:text-lg truncate group-hover:text-purple-400 transition-colors max-w-[280px]">
                         {report.appName && report.moduleName ? `${report.appName} - ${report.moduleName}` : report.title}
                       </h4>
-                      <p className="text-xs sm:text-sm text-zinc-500 font-mono mt-0.5">{new Date(report.timestamp).toLocaleString()}</p>
+                      <p className="text-xs sm:text-sm text-zinc-500 font-mono mt-0.5"><SafeFormattedDate value={report.timestamp} /></p>
                     </div>
                   </div>
 

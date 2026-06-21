@@ -5,7 +5,7 @@ import Link from 'next/link';
 import { usePathname } from 'next/navigation';
 import { 
   Play, ClipboardList, History, Settings, CodeXml, ChevronRight, 
-  LayoutDashboard, FileTerminal, ShieldAlert, LogOut, User, Cpu
+  LayoutDashboard, FileTerminal, ShieldAlert, LogOut, User, Cpu, Layers
 } from 'lucide-react';
 
 export default function Sidebar() {
@@ -13,6 +13,7 @@ export default function Sidebar() {
 
   const menuItems = [
     { name: 'Run Test', path: '/run-test', icon: Play },
+    { name: 'Test Cases', path: '/test-cases', icon: Layers },
     { name: 'Executions', path: '/executions', icon: History },
     { name: 'Reports', path: '/reports', icon: ClipboardList },
     { name: 'Generated Scripts', path: '/generated-scripts', icon: FileTerminal },
