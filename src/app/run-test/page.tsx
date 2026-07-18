@@ -312,10 +312,7 @@ ${logs}
     setRunId(clientRunId);
 
     setLiveLogs([
-      `[${new Date().toLocaleTimeString()}] INITIALIZING AUTOQA KERNEL...`,
-      `[${new Date().toLocaleTimeString()}] SYSTEM: NODE_VERSION v20.11.0`,
-      `[${new Date().toLocaleTimeString()}] LOADING TEST SUITE CONTEXT: functional_runner.ts`,
-      `[${new Date().toLocaleTimeString()}] STEP: BROWSER_STARTING [IN_PROGRESS]`
+      `[${new Date().toLocaleTimeString()}] Submitting run ${clientRunId} to server...`,
     ]);
 
     // Reset stages
@@ -329,32 +326,18 @@ ${logs}
       { id: '7', name: 'Completed', status: 'pending' },
     ]);
 
-    // Animate stage progressions to show activity
+    // Animate stage progressions to show activity (statuses are corrected with
+    // real results when the run finishes; actual logs stream from the server).
     const stageTimer1 = setTimeout(() => {
       setStages(prev => prev.map(s => s.id === '1' ? { ...s, status: 'completed' } : s.id === '2' ? { ...s, status: 'running' } : s));
-      setLiveLogs(prev => [
-        ...prev,
-        `[${new Date().toLocaleTimeString()}] STEP: BROWSER_START [SUCCESS]`,
-        `[${new Date().toLocaleTimeString()}] EXEC: navigating browser page to target URL: "${url}"`
-      ]);
     }, 1500);
 
     const stageTimer2 = setTimeout(() => {
       setStages(prev => prev.map(s => s.id === '2' ? { ...s, status: 'completed' } : s.id === '3' ? { ...s, status: 'running' } : s));
-      setLiveLogs(prev => [
-        ...prev,
-        `[${new Date().toLocaleTimeString()}] STEP: URL_OPEN [SUCCESS]`,
-        `[${new Date().toLocaleTimeString()}] SCAN: Identifying DOM interactive element candidates...`
-      ]);
     }, 3000);
 
     const stageTimer3 = setTimeout(() => {
       setStages(prev => prev.map(s => s.id === '3' ? { ...s, status: 'completed' } : s.id === '4' ? { ...s, status: 'running' } : s));
-      setLiveLogs(prev => [
-        ...prev,
-        `[${new Date().toLocaleTimeString()}] STEP: ELEMENTS_DISCOVERED [SUCCESS]`,
-        `[${new Date().toLocaleTimeString()}] EXEC: Initiating rule-based steps runner loop...`
-      ]);
     }, 4500);
 
     // Poll server-side activeLogs for real-time progress logging

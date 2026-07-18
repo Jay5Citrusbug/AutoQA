@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { RunTestRequestSchema } from '@/types/apiModels';
 import { PlaywrightRunner } from '@/core/execution/playwrightRunner';
 import { TestCaseParser } from '@/core/parser/testCaseParser';
+import { runRegistry } from '@/core/execution/runRegistry';
 
 export async function POST(request: NextRequest) {
   try {
@@ -77,23 +78,6 @@ export async function POST(request: NextRequest) {
       totalCount: context.stepResults.length,
       browser,
       deviceMode,
-      stages: [
-        { name: 'Browser Started', status: 'completed' as const, durationMs: 400 },
-        { name: 'URL Opened', status: 'completed' as const, durationMs: 600 },
-        { name: 'Elements Discovered', status: 'completed' as const, durationMs: 200 },
-        {
-          name: 'Validation Running',
-          status: failedCount > 0 ? ('failed' as const) : ('completed' as const),
-          durationMs: 500,
-        },
-        { name: 'Evidence Collection', status: 'completed' as const, durationMs: 200 },
-        { name: 'Report Generation', status: 'completed' as const, durationMs: 100 },
-        {
-          name: 'Completed',
-          status: failedCount > 0 ? ('failed' as const) : ('completed' as const),
-          durationMs: 50,
-        },
-      ],
       steps: context.stepResults.map((r) => ({
         stepIndex: r.stepIndex,
         rawText: r.step.rawText,
@@ -114,20 +98,19 @@ export async function POST(request: NextRequest) {
         status: ts.status,
         durationMs: ts.durationMs,
         generatedScriptPath: ts.generatedScriptPath,
+        scriptVerification: ts.scriptVerification,
       })),
     };
 
-    // Clean up live activeLogs from memory after run finishes
-    if ((globalThis as any).activeLogs && runId) {
-      delete (globalThis as any).activeLogs[runId];
-    }
+    // Clean up live logs from memory after run finishes
+    if (runId) runRegistry.clearLogs(runId);
 
     return NextResponse.json(responsePayload, { status: 200 });
-  } catch (err: any) {
+  } catch (err: unknown) {
     return NextResponse.json(
       {
         error: 'Internal server error occurred',
-        details: err?.message || 'Unknown error context',
+        details: err instanceof Error ? err.message : 'Unknown error context',
       },
       { status: 500 },
     );
@@ -141,9 +124,10 @@ export async function GET(request: NextRequest) {
     if (!runId) {
       return NextResponse.json({ error: 'runId is required' }, { status: 400 });
     }
-    const logs = (globalThis as any).activeLogs?.[runId] || [];
+    const logs = runRegistry.getLogs(runId);
     return NextResponse.json({ logs }, { status: 200 });
-  } catch (err: any) {
-    return NextResponse.json({ error: err?.message || 'Error fetching active logs' }, { status: 500 });
+  } catch (err: unknown) {
+    const message = err instanceof Error ? err.message : 'Error fetching active logs';
+    return NextResponse.json({ error: message }, { status: 500 });
   }
 }

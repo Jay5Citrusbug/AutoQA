@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
+import { runRegistry } from '@/core/execution/runRegistry';
 
 export async function POST(request: NextRequest) {
   try {
@@ -7,19 +8,22 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: 'runId is required' }, { status: 400 });
     }
 
-    if (!(globalThis as any).activeRuns) {
-      (globalThis as any).activeRuns = {};
-    }
+    // Marks the run aborted AND force-closes its live browsers so a step stuck
+    // mid-navigation stops immediately instead of running to its timeout.
+    const wasActive = await runRegistry.abort(runId);
 
-    // Set abort flag to true
-    if ((globalThis as any).activeRuns[runId]) {
-      (globalThis as any).activeRuns[runId].aborted = true;
-    } else {
-      (globalThis as any).activeRuns[runId] = { aborted: true };
-    }
-
-    return NextResponse.json({ success: true, runId, message: 'Execution cancellation signal transmitted.' }, { status: 200 });
-  } catch (err: any) {
-    return NextResponse.json({ error: err.message || 'Failed to cancel execution' }, { status: 550 });
+    return NextResponse.json(
+      {
+        success: true,
+        runId,
+        message: wasActive
+          ? 'Execution cancelled and browser(s) closed.'
+          : 'Cancellation recorded; run will abort as soon as it starts.',
+      },
+      { status: 200 },
+    );
+  } catch (err: unknown) {
+    const message = err instanceof Error ? err.message : 'Failed to cancel execution';
+    return NextResponse.json({ error: message }, { status: 500 });
   }
 }

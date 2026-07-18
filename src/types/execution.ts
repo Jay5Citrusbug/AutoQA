@@ -77,6 +77,15 @@ export interface ExecutionContext {
   testSuiteResults?: TestSuiteResult[];
 }
 
+export type ScriptVerificationStatus = 'verified' | 'broken' | 'skipped' | 'error';
+
+export interface ScriptVerificationResult {
+  status: ScriptVerificationStatus;
+  durationMs: number;
+  /** Trimmed stdout/stderr from the Playwright run, for surfacing failures. */
+  output?: string;
+}
+
 export interface TestSuiteResult {
   tcId: string;
   title: string;
@@ -86,4 +95,5 @@ export interface TestSuiteResult {
   generatedScriptPath?: string;
   videoPath?: string;
   networkRequests?: NetworkRequestRecord[];
+  scriptVerification?: ScriptVerificationResult;
 }

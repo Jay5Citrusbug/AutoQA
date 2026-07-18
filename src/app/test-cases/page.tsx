@@ -116,6 +116,21 @@ export default function TestCasesPage() {
         throw new Error(data.error || data.details || 'Failed to save test case');
       }
 
+      // Warn (non-blocking) about steps the parser could not understand, so the
+      // user can rephrase them rather than discovering the failure only at run time.
+      const unparsed = Array.isArray(data.steps)
+        ? data.steps.filter((s: { type?: string }) => s?.type === 'unparsed')
+        : [];
+      if (unparsed.length > 0) {
+        const lines = unparsed
+          .map((s: { rawText?: string }) => `  • ${s.rawText ?? ''}`)
+          .join('\n');
+        alert(
+          `Saved, but ${unparsed.length} step(s) were not understood and will fail at run time:\n\n${lines}\n\n` +
+            `Rephrase them starting with an action verb (click, enter, select, check, navigate) or an assertion (verify/assert/expect).`,
+        );
+      }
+
       // Close modal and refresh list
       setIsModalOpen(false);
       fetchTestCases();

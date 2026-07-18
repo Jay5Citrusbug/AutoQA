@@ -5,12 +5,16 @@ export type ValidationType = 'url' | 'text' | 'visible' | 'enabled' | 'success_m
 export interface ParsedStep {
   stepIndex: number;
   rawText: string;
-  type: 'action' | 'validation';
+  // 'unparsed' means no known pattern matched — the runner reports it as a failure
+  // with a clear message instead of blindly guessing an action.
+  type: 'action' | 'validation' | 'unparsed';
   action?: ActionType;
   validation?: ValidationType;
   targetField: string; // E.g., 'email', 'loginButton', 'submit'
   value?: string;      // E.g., value to type, or text to validate
   waitMs?: number;     // For wait actions
+  // Human-readable reason a step could not be understood (only set when type === 'unparsed').
+  parseWarning?: string;
 }
 
 export interface TestCase {

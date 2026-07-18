@@ -15,11 +15,15 @@ import { ScreenshotManager } from '../evidence/screenshotManager';
 import { LogManager } from '../evidence/logManager';
 import { ReportGenerator } from '../reporting/reportGenerator';
 import { PlaywrightGenerator } from '../generator/playwrightGenerator';
+import { ScriptVerifier } from './scriptVerifier';
 import { logger } from '@/utils/logger';
 import { v4 as uuidv4 } from 'uuid';
 import fs from 'fs';
 import path from 'path';
 import { fileHelper } from '@/utils/fileHelper';
+import { getCredentials, substituteVariables } from '@/utils/testData';
+import { runRegistry } from './runRegistry';
+import type { Browser, BrowserContext, Page, Request } from '@playwright/test';
 
 // Universal 30-second timeout applied to all network-dependent operations.
 const UNIVERSAL_TIMEOUT_MS = 30_000;
@@ -71,6 +75,8 @@ function getBrowserType(engine: BrowserEngine): BrowserType {
 export interface RunConfig {
   headless?: boolean;
   generateScript?: boolean;
+  /** Re-run each generated spec headless to confirm it replays. Slow (~doubles runtime); off by default. */
+  verifyScript?: boolean;
   captureScreenshots?: boolean;
   captureConsoleLogs?: boolean;
   captureNetworkLogs?: boolean;
@@ -105,6 +111,7 @@ export class PlaywrightRunner implements IPlaywrightRunner {
   private logManager: LogManager;
   private reportGenerator: ReportGenerator;
   private scriptGenerator: PlaywrightGenerator;
+  private scriptVerifier: ScriptVerifier;
 
   constructor() {
     this.parser = new TestCaseParser();
@@ -114,6 +121,7 @@ export class PlaywrightRunner implements IPlaywrightRunner {
     this.logManager = new LogManager();
     this.reportGenerator = new ReportGenerator();
     this.scriptGenerator = new PlaywrightGenerator();
+    this.scriptVerifier = new ScriptVerifier();
   }
 
   // -----------------------------------------------------------------------
@@ -151,22 +159,15 @@ export class PlaywrightRunner implements IPlaywrightRunner {
     const deviceMode = config?.deviceMode ?? 'desktop';
     const maxWorkers = Math.max(1, Math.min(config?.maxWorkers ?? 1, 8));
 
-    // Initialize global activeRuns
-    if (!(globalThis as any).activeRuns) {
-      (globalThis as any).activeRuns = {};
-    }
-    (globalThis as any).activeRuns[runId] = { aborted: false };
+    // Register this run (preserving an abort that arrived before start) + seed live logs.
+    const preAborted = runRegistry.get(runId)?.aborted === true;
+    const activeRun = runRegistry.start(runId);
+    activeRun.aborted = preAborted;
 
-    // Initialize global activeLogs storage for live streaming logs
-    if (!(globalThis as any).activeLogs) {
-      (globalThis as any).activeLogs = {};
-    }
-    (globalThis as any).activeLogs[runId] = [
-      `[${new Date().toLocaleTimeString()}] [SYSTEM] INITIALIZING AUTOQA KERNEL...`,
-      `[${new Date().toLocaleTimeString()}] [SYSTEM] NODE_VERSION v20.11.0`,
-      `[${new Date().toLocaleTimeString()}] [SYSTEM] LOADING TEST SUITE CONTEXT: functional_runner.ts`,
-      `[${new Date().toLocaleTimeString()}] [SYSTEM] BROWSER_STARTING [IN_PROGRESS]`
-    ];
+    runRegistry.initLogs(runId, [
+      `[${new Date().toLocaleTimeString()}] [SYSTEM] Run ${runId} started (node ${process.version})`,
+      `[${new Date().toLocaleTimeString()}] [SYSTEM] Suites: ${suites.length} | Browser: ${browser} | Device: ${deviceMode} | Workers: ${maxWorkers}`,
+    ]);
 
     logger.info(
       `Starting parallel test run. Suites: ${suites.length}, Workers: ${maxWorkers}, Browser: ${browser}, Device: ${deviceMode}`,
@@ -233,6 +234,21 @@ export class PlaywrightRunner implements IPlaywrightRunner {
           const specUrl = await this.scriptGenerator.generateSpec(suiteCtx, sr.tcId);
           sr.generatedScriptPath = specUrl;
         }
+
+        // Opt-in: replay the generated spec headless to confirm it actually works.
+        if (config?.verifyScript && sr.generatedScriptPath) {
+          const specFileName = path.basename(sr.generatedScriptPath);
+          runRegistry.pushLog(runId, `[${new Date().toLocaleTimeString()}] [${sr.tcId}] Verifying generated spec...`);
+          sr.scriptVerification = await this.scriptVerifier.verify(specFileName).catch((e) => ({
+            status: 'error' as const,
+            durationMs: 0,
+            output: e?.message,
+          }));
+          runRegistry.pushLog(
+            runId,
+            `[${new Date().toLocaleTimeString()}] [${sr.tcId}] Spec verification: ${sr.scriptVerification.status}`,
+          );
+        }
       }
 
       // Use the first suite's script path as the primary
@@ -243,9 +259,7 @@ export class PlaywrightRunner implements IPlaywrightRunner {
       await this.reportGenerator.generate(reportPayload.details);
     }
 
-    if ((globalThis as any).activeRuns && runId) {
-      delete (globalThis as any).activeRuns[runId];
-    }
+    runRegistry.finish(runId);
 
     return context;
   }
@@ -264,7 +278,7 @@ export class PlaywrightRunner implements IPlaywrightRunner {
     const suiteStart = Date.now();
     const stepResults: StepExecutionResult[] = [];
     const networkRequests: NetworkRequestRecord[] = [];
-    const requestTimes = new Map<any, number>();
+    const requestTimes = new Map<Request, number>();
 
     const settings = fileHelper.getSettings();
     const videoCaptureSetting = settings.videoCapture ?? 'off';
@@ -272,10 +286,7 @@ export class PlaywrightRunner implements IPlaywrightRunner {
 
     const pushRealTimeLog = (msg: string) => {
       const timeStr = new Date().toLocaleTimeString();
-      const formattedLog = `[${timeStr}] [${suite.id}] ${msg}`;
-      if ((globalThis as any).activeLogs?.[runId]) {
-        (globalThis as any).activeLogs[runId].push(formattedLog);
-      }
+      runRegistry.pushLog(runId, `[${timeStr}] [${suite.id}] ${msg}`);
     };
 
     pushRealTimeLog(`LAUNCHING BROWSER ENGINE: ${browserEngine} (${deviceMode} mode)...`);
@@ -283,9 +294,9 @@ export class PlaywrightRunner implements IPlaywrightRunner {
     const browserType = getBrowserType(browserEngine);
     const deviceConfig = DEVICE_CONFIGS[deviceMode];
 
-    let browser: any;
-    let browserContext: any;
-    let page: any;
+    let browser: Browser | undefined;
+    let browserContext: BrowserContext | undefined;
+    let page: Page | undefined;
     let tempVideoPath = '';
     let videoPath = '';
     try {
@@ -298,6 +309,15 @@ export class PlaywrightRunner implements IPlaywrightRunner {
             ? ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage']
             : [],
       });
+
+      // Register the browser so a cancel request can force-close it mid-step.
+      runRegistry.registerBrowser(runId, browser);
+
+      // If the run was cancelled before/while launching, bail out immediately.
+      if (runRegistry.isAborted(runId)) {
+        await browser.close().catch(() => {});
+        throw new Error('Execution cancelled by user before browser started.');
+      }
 
       const recordVideoDir = path.join(process.cwd(), 'public', 'videos');
       if (!fs.existsSync(recordVideoDir)) {
@@ -318,10 +338,10 @@ export class PlaywrightRunner implements IPlaywrightRunner {
       page = await browserContext.newPage();
 
       // Listen to all network requests for waterfall diagram
-      page.on('request', (req: any) => {
+      page.on('request', (req) => {
         requestTimes.set(req, Date.now());
       });
-      page.on('response', (res: any) => {
+      page.on('response', (res) => {
         const req = res.request();
         const startTime = requestTimes.get(req);
         const durationMs = startTime ? Date.now() - startTime : 0;
@@ -356,7 +376,7 @@ export class PlaywrightRunner implements IPlaywrightRunner {
         };
 
         // Check for abort signal from user
-        if ((globalThis as any).activeRuns?.[runId]?.aborted) {
+        if (runRegistry.isAborted(runId)) {
           suiteFailed = true;
           pushRealTimeLog(`EXECUTION ABORTED BY USER SIGNAL`);
           stepLogs.push(`Aborted: execution cancelled by user`);
@@ -395,10 +415,25 @@ export class PlaywrightRunner implements IPlaywrightRunner {
         };
 
         try {
-          if (step.type === 'action') {
+          // Resolve {{var}} test-data references at execution time.
+          // Logs, reports and generated scripts keep the raw template so secrets never leak into artifacts.
+          let stepValue = step.value;
+          if (stepValue && stepValue.includes('{{')) {
+            const sub = substituteVariables(stepValue);
+            if (sub.missing.length > 0) {
+              throw new Error(`Unresolved test-data variable(s): ${sub.missing.join(', ')}`);
+            }
+            stepValue = sub.text;
+            stepLogs.push(`Resolved test-data variables from environment`);
+          }
+
+          if (step.type === 'unparsed') {
+            // Parser could not understand this step — fail clearly instead of guessing.
+            throw new Error(step.parseWarning || `Step could not be parsed: "${step.rawText}"`);
+          } else if (step.type === 'action') {
             switch (step.action) {
               case 'navigate': {
-                let targetUrl = step.value || url;
+                let targetUrl = stepValue || url;
                 if (!targetUrl.startsWith('http://') && !targetUrl.startsWith('https://')) {
                   targetUrl = url.startsWith('http') ? url : 'https://' + targetUrl;
                 }
@@ -417,8 +452,10 @@ export class PlaywrightRunner implements IPlaywrightRunner {
               case 'fill': {
                 if (step.targetField === 'credentials') {
                   const isValid = step.value === 'valid';
-                  const userVal = isValid ? 'jay.r@optevo.com' : 'invalid_user@optevo.com';
-                  const passVal = isValid ? 'Jayqa@1234' : 'WrongPassword123!';
+                  // Credentials come from .env (QA_VALID_* / QA_INVALID_*) — never hardcoded.
+                  const { username: userVal, password: passVal } = getCredentials(
+                    isValid ? 'valid' : 'invalid',
+                  );
 
                   stepLogs.push(`Scanning DOM for credential fields`);
 
@@ -448,9 +485,9 @@ export class PlaywrightRunner implements IPlaywrightRunner {
                 stepLogs.push(`Resolved: "${match.selector}" (${match.score}%)`);
                 result.resolvedSelector = match.selector;
                 if (!isHeadless) {
-                  await page.locator(match.selector).first().pressSequentially(step.value || '', { delay: 100 });
+                  await page.locator(match.selector).first().pressSequentially(stepValue || '', { delay: 100 });
                 } else {
-                  await page.locator(match.selector).first().fill(step.value || '');
+                  await page.locator(match.selector).first().fill(stepValue || '');
                 }
                 stepLogs.push(`Filled "${step.value}" into element`);
                 break;
@@ -485,7 +522,7 @@ export class PlaywrightRunner implements IPlaywrightRunner {
                 stepLogs.push(`Scanning DOM for dropdown: "${step.targetField}"`);
                 const match = await this.discovery.discover(page, step.targetField);
                 result.resolvedSelector = match.selector;
-                await page.locator(match.selector).first().selectOption(step.value || '');
+                await page.locator(match.selector).first().selectOption(stepValue || '');
                 stepLogs.push(`Selected option: "${step.value}"`);
                 break;
               }
@@ -525,7 +562,7 @@ export class PlaywrightRunner implements IPlaywrightRunner {
               // no-op: validator handles live DOM lookups internally
             }
 
-            const valResult = await this.validator.validate(page, step);
+            const valResult = await this.validator.validate(page, { ...step, value: stepValue });
             if (!valResult.success) {
               throw new Error(valResult.error || 'Assertion check failed.');
             }
@@ -589,7 +626,9 @@ export class PlaywrightRunner implements IPlaywrightRunner {
           if (video) {
             tempVideoPath = await video.path().catch(() => '');
           }
-        } catch (err) {}
+        } catch (err) {
+          logger.error(`[${suite.id}] Could not resolve video path`, err);
+        }
       }
       if (browser) {
         if (!isHeadless && page) {

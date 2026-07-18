@@ -26,6 +26,21 @@ import {
 
 const DEBUG = process.env.AUTOQA_DISCOVERY_DEBUG === '1';
 
+// Minimum confidence to accept a real DOM element. Below this we fail clearly
+// rather than acting on a wrong element or a fabricated generic selector.
+const MIN_CONFIDENCE = 35;
+
+/** Thrown when no element can be confidently matched for a field name. */
+export class ElementNotFoundError extends Error {
+  constructor(public target: string, public bestScore: number) {
+    super(
+      `Element not found for "${target}" (best confidence ${Math.max(0, Math.round(bestScore))}%, ` +
+        `need ${MIN_CONFIDENCE}%). Rephrase the step or add an id / label / data-testid to the element.`,
+    );
+    this.name = 'ElementNotFoundError';
+  }
+}
+
 const dlog = (...args: any[]) => {
   if (DEBUG) console.log('[ElementDiscovery]', ...args);
 };
@@ -86,49 +101,43 @@ export class ElementDiscoveryEngine implements IElementDiscoveryEngine {
       return true;
     });
 
-    // Probe each candidate on the live page and score the winners
+    // Probe every candidate concurrently, then pick the highest scorer.
+    // Parallelizing replaces the old serial 800ms-per-candidate scan.
+    const probes = await Promise.all(
+      uniqueCandidates.map(async (candidate) => {
+        try {
+          const locator = page.locator(candidate.selector).first();
+          const isVisible = await locator.isVisible({ timeout: 800 }).catch(() => false);
+          if (!isVisible) return null;
+          const attrs = await this._extractAttributes(page, candidate.selector);
+          const { score, winningSignal } = scoreElement(attrs, ctx);
+          dlog(`  ${candidate.selector} → score ${score} (${winningSignal})`);
+          return { candidate, attrs, score, winningSignal };
+        } catch {
+          return null;
+        }
+      }),
+    );
+
     let bestMatch: DiscoveryMatch | null = null;
     let bestScore = -1;
-
-    for (const candidate of uniqueCandidates) {
-      dlog(`  Trying: ${candidate.selector} (${candidate.reason})`);
-      try {
-        const locator = page.locator(candidate.selector).first();
-        const isVisible = await locator.isVisible({ timeout: 800 }).catch(() => false);
-
-        if (!isVisible) {
-          dlog(`    → Not visible, skip`);
-          continue;
-        }
-
-        // Extract element attributes for scoring
-        const attrs = await this._extractAttributes(page, candidate.selector);
-        const { score, winningSignal } = scoreElement(attrs, ctx);
-
-        dlog(`    → Visible! Score: ${score} (signal: ${winningSignal})`);
-
-        if (score > bestScore) {
-          bestScore = score;
-          bestMatch = {
-            selector: candidate.selector,
-            score,
-            strategy: winningSignal as any,
-            tagName: attrs.tagName,
-            attributes: {
-              id: attrs.id,
-              name: attrs.name,
-              type: attrs.type,
-              placeholder: attrs.placeholder,
-              'aria-label': attrs.ariaLabel,
-              class: attrs.classNames,
-            },
-          };
-          dlog(`    → New best: score=${score}, signal=${winningSignal}`);
-        }
-      } catch {
-        // Selector invalid or timed out — skip
-        dlog(`    → Error resolving selector, skip`);
-      }
+    for (const p of probes) {
+      if (!p || p.score <= bestScore) continue;
+      bestScore = p.score;
+      bestMatch = {
+        selector: p.candidate.selector,
+        score: p.score,
+        strategy: p.winningSignal as DiscoveryMatch['strategy'],
+        tagName: p.attrs.tagName,
+        attributes: {
+          id: p.attrs.id,
+          name: p.attrs.name,
+          type: p.attrs.type,
+          placeholder: p.attrs.placeholder,
+          'aria-label': p.attrs.ariaLabel,
+          class: p.attrs.classNames,
+        },
+      };
     }
 
     if (bestMatch && bestMatch.score >= 50) {
@@ -136,35 +145,22 @@ export class ElementDiscoveryEngine implements IElementDiscoveryEngine {
       return bestMatch;
     }
 
-    // Last-resort fallback — query all inputs and score via DOM evaluation
-    dlog('No strategy hit with confidence >= 50 — falling back to full DOM scan');
+    // Full DOM scan fallback — scores every interactive element in one evaluate().
+    dlog('No strategy hit confidence >= 50 — falling back to full DOM scan');
     const domFallback = await this._fullDomScan(page, ctx);
     if (domFallback && domFallback.score > (bestMatch?.score || 0)) {
-      dlog(`DOM scan winner: "${domFallback.selector}" (score ${domFallback.score})`);
-      return domFallback;
+      bestMatch = domFallback;
+      bestScore = domFallback.score;
     }
 
-    if (bestMatch) {
-      dlog(`Returning best available strategy candidate: "${bestMatch.selector}" (score ${bestMatch.score})`);
+    // Accept the best real element only if it clears the confidence floor;
+    // otherwise fail clearly instead of acting on the wrong element.
+    if (bestMatch && bestMatch.score >= MIN_CONFIDENCE) {
+      dlog(`Accepting best match: "${bestMatch.selector}" (score ${bestMatch.score})`);
       return bestMatch;
     }
 
-    // Hard fallback — return a generic selector with low confidence
-    const genericSelector = isButtonHint
-      ? `button:has-text("${rawTarget}"), input[type="submit"]`
-      : isInputHint
-        ? `input:not([type="hidden"])` 
-        : `[name="${rawTarget}"], #${rawTarget}, [placeholder*="${rawTarget}" i]`;
-
-    console.warn(`[ElementDiscovery] No match found for "${rawTarget}". Returning generic fallback: ${genericSelector}`);
-
-    return {
-      selector: genericSelector,
-      score: 5,
-      strategy: 'fallback',
-      tagName: isButtonHint ? 'button' : 'input',
-      attributes: {},
-    };
+    throw new ElementNotFoundError(rawTarget, bestScore);
   }
 
   /**

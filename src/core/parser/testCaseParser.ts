@@ -41,15 +41,31 @@ export class TestCaseParser implements ITestCaseParser {
       const stepIndex = idx + 1;
 
       // 1. GOTO / NAVIGATE TO
-      let match = cleanText.match(/^(?:navigate\s+to|goto|open|visit)\s+(?:the\s+)?["']?([^"'\s]+(?:\s+[^"'\s]+)*)["']?/i);
+      let match = cleanText.match(/^(?:navigate\s+to|go\s+to|goto|open|visit|load|browse\s+to)\b/i);
       if (match) {
+        // Prefer an explicit URL anywhere in the line (handles "open Login page - https://x.com/login").
+        const urlInLine = cleanText.match(/https?:\/\/[^\s"'<>)]+/i);
+        let target: string | undefined = urlInLine?.[0];
+
+        if (!target) {
+          // No full URL — take the phrase after the verb, stripping quotes and a
+          // leading label like "Login page - ". Bare-domain values (example.com/login) survive.
+          const after = cleanText
+            .replace(/^(?:navigate\s+to|go\s+to|goto|open|visit|load|browse\s+to)\s+/i, '')
+            .replace(/^(?:the\s+)?/i, '')
+            .replace(/["']/g, '')
+            .trim();
+          const domainLike = after.match(/[a-z0-9-]+(?:\.[a-z0-9-]+)+(?:\/[^\s]*)?/i);
+          target = domainLike?.[0] || after || undefined;
+        }
+
         parsedSteps.push({
           stepIndex,
           rawText: trimmed,
           type: 'action',
           action: 'navigate',
           targetField: 'url',
-          value: match[1],
+          value: target,
         });
         return;
       }
@@ -351,13 +367,16 @@ export class TestCaseParser implements ITestCaseParser {
           value: fallbackVal,
         });
       } else {
-        // Fallback action click
+        // No known pattern matched. Never blindly click — mark the step unparsed
+        // so the runner reports a clear failure and the UI can prompt a rephrase.
         parsedSteps.push({
           stepIndex,
           rawText: trimmed,
-          type: 'action',
-          action: 'click',
-          targetField: cleanText,
+          type: 'unparsed',
+          targetField: '',
+          parseWarning:
+            `Step could not be understood: "${trimmed}". ` +
+            `Start with an action verb (click, enter, select, check, navigate) or an assertion (verify/assert/expect).`,
         });
       }
     });

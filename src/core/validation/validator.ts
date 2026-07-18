@@ -136,10 +136,54 @@ export class Validator implements IValidator {
         }
 
         // ------------------------------------------------------------------ //
-        // TEXT / MESSAGE VALIDATION — polls body text up to 2 min            //
+        // MESSAGE VALIDATION — success/error banners scoped to visible       //
+        // alert/toast regions (not a blind full-body substring search).      //
         // ------------------------------------------------------------------ //
         case 'success_msg':
-        case 'error_msg':
+        case 'error_msg': {
+          if (!value) {
+            return { success: false, error: 'Expected message text was not provided.' };
+          }
+
+          const regions =
+            type === 'error_msg'
+              ? ['[role="alert"]', '.error', '.error-message', '.alert-danger', '.invalid-feedback', '.toast', '.notification', '.message']
+              : ['[role="status"]', '[role="alert"]', '.success', '.alert-success', '.flash.success', '.toast', '.notification', '.message'];
+
+          const needle = value.toLowerCase();
+          let lastRegionText = '';
+
+          const { ok } = await this.waitUntil(async () => {
+            for (const sel of regions) {
+              const loc = page.locator(sel);
+              const count = await loc.count().catch(() => 0);
+              for (let i = 0; i < count; i++) {
+                const el = loc.nth(i);
+                if (!(await el.isVisible().catch(() => false))) continue;
+                const txt = (await el.innerText().catch(() => '')).trim();
+                if (txt) lastRegionText = txt;
+                if (txt.toLowerCase().includes(needle)) return true;
+              }
+            }
+            return false;
+          });
+
+          if (!ok) {
+            const detail = lastRegionText
+              ? `Closest visible ${type === 'error_msg' ? 'error' : 'status'} region said: "${lastRegionText.substring(0, 200)}".`
+              : `No visible ${type === 'error_msg' ? 'error' : 'success'} message region was found on the page.`;
+            return {
+              success: false,
+              error: `${type === 'error_msg' ? 'Error' : 'Success'} message validation failed after ${VALIDATION_TIMEOUT_MS / 1000}s. Expected a visible message containing "${value}". ${detail}`,
+            };
+          }
+          break;
+        }
+
+        // ------------------------------------------------------------------ //
+        // GENERIC TEXT VALIDATION — visible page text contains the value.    //
+        // Uses innerText (rendered/visible only), never hidden DOM.          //
+        // ------------------------------------------------------------------ //
         case 'text': {
           if (!value) {
             return { success: false, error: 'Expected text value was not provided.' };
@@ -148,7 +192,6 @@ export class Validator implements IValidator {
           let lastBodyText = '';
 
           const { ok } = await this.waitUntil(async () => {
-            // Wait for page to settle first (network idle with short timeout)
             try {
               await page.waitForLoadState('domcontentloaded', { timeout: 5_000 });
             } catch {

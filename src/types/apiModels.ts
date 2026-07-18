@@ -17,6 +17,7 @@ export const RunTestRequestSchema = z.object({
   maxWorkers: z.number().int().min(1).max(8).default(1),
   config: z.object({
     generateScript: z.boolean().default(true),
+    verifyScript: z.boolean().default(false),
     captureScreenshots: z.boolean().default(true),
     captureConsoleLogs: z.boolean().default(false),
     captureNetworkLogs: z.boolean().default(false),
@@ -65,11 +66,6 @@ export interface APIRunTestResponse {
   totalCount: number;
   browser: string;
   deviceMode: string;
-  stages: {
-    name: string;
-    status: 'pending' | 'running' | 'completed' | 'failed';
-    durationMs: number;
-  }[];
   steps: {
     stepIndex: number;
     rawText: string;
