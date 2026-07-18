@@ -23,6 +23,9 @@ export interface StepExecutionResult {
   error?: string;
   durationMs: number;
   logs: string[];
+  // Failure-context evidence (populated only when a step fails).
+  domSnapshotPath?: string;
+  pageUrl?: string;
 }
 
 export interface ConsoleMessageRecord {
@@ -75,6 +78,8 @@ export interface ExecutionContext {
   generatedScriptPath?: string;
   // Per-TC grouped results (when multiple TCs are run)
   testSuiteResults?: TestSuiteResult[];
+  // Auto-drafted/filed bug for a failed run (Phase 4.4)
+  bugReport?: BugReportSummary;
 }
 
 export type ScriptVerificationStatus = 'verified' | 'broken' | 'skipped' | 'error';
@@ -96,4 +101,21 @@ export interface TestSuiteResult {
   videoPath?: string;
   networkRequests?: NetworkRequestRecord[];
   scriptVerification?: ScriptVerificationResult;
+  consoleLogs?: ConsoleMessageRecord[];
+  networkErrors?: NetworkErrorRecord[];
+}
+
+/** Auto-drafted bug summary surfaced on a failed run (Phase 4.4). */
+export interface BugReportSummary {
+  id: string;
+  title: string;
+  severity: 'critical' | 'high' | 'medium' | 'low';
+  category?: string;
+  rootCause?: string;
+  suggestedFix?: string;
+  /** 'drafted' = evidence only; 'filed' = a Jira issue was created. */
+  disposition: 'drafted' | 'filed';
+  jiraIssueId?: string;
+  jiraUrl?: string;
+  jiraMock?: boolean;
 }

@@ -1,25 +1,26 @@
-import { ExecutionContext } from '@/types/execution';
+import { ExecutionContext, BugReportSummary } from '@/types/execution';
 import { ReportPayload, ReportSummary } from '@/types/report';
 import { fileHelper } from '@/utils/fileHelper';
 import path from 'path';
 import fs from 'fs';
 import { logger } from '@/utils/logger';
-import { 
-  DbRepository, 
-  EvidenceCollector, 
-  BugAutoGenerator, 
-  JiraClient, 
-  ReportExporter, 
-  TestExecutionData,
+import {
+  EvidenceCollector,
+  BugAutoGenerator,
+  JiraClient,
+  ReportExporter,
   TestReport,
   StepReport,
-  APILog,
-  ConsoleLog,
   BugReport
 } from '@/lib/report-bug-tracker';
 
+export interface GenerateOptions {
+  /** When true, a drafted bug is actually filed as a Jira issue (Phase 4.4). */
+  autoFileBug?: boolean;
+}
+
 export interface IReportGenerator {
-  generate(context: ExecutionContext): Promise<ReportPayload>;
+  generate(context: ExecutionContext, options?: GenerateOptions): Promise<ReportPayload>;
 }
 
 export class ReportGenerator implements IReportGenerator {
@@ -32,7 +33,30 @@ export class ReportGenerator implements IReportGenerator {
     }
   }
 
-  public async generate(context: ExecutionContext): Promise<ReportPayload> {
+  /**
+   * Builds a Jira client from env. Real mode requires JIRA_BASE_URL + JIRA_EMAIL +
+   * JIRA_API_TOKEN; otherwise it runs in mock mode (drafts a fake ticket id).
+   */
+  private buildJiraClient(): { client: JiraClient; mock: boolean } {
+    const baseUrl = process.env.JIRA_BASE_URL;
+    const email = process.env.JIRA_EMAIL;
+    const apiToken = process.env.JIRA_API_TOKEN;
+    const projectKey = process.env.JIRA_PROJECT_KEY || 'QA';
+    const mock = !(baseUrl && email && apiToken);
+
+    return {
+      mock,
+      client: new JiraClient({
+        baseUrl: baseUrl || 'https://jira.example-mock.com',
+        projectKey,
+        email,
+        apiToken,
+        isMockMode: mock,
+      }),
+    };
+  }
+
+  public async generate(context: ExecutionContext, options?: GenerateOptions): Promise<ReportPayload> {
     const totalSteps = context.stepResults.length;
     const passedSteps = context.stepResults.filter((s) => s.status === 'passed').length;
     const failedSteps = context.stepResults.filter((s) => s.status === 'failed').length;
@@ -56,13 +80,8 @@ export class ReportGenerator implements IReportGenerator {
     };
 
     // 1. Initialize report-bug-tracker components
-    const dbRepo = new DbRepository();
     const bugGen = new BugAutoGenerator();
-    const jiraClient = new JiraClient({
-      baseUrl: 'https://jira.company-qa-portal.com',
-      projectKey: 'QA',
-      isMockMode: true
-    });
+    const { client: jiraClient, mock: jiraMock } = this.buildJiraClient();
     const exporter = new ReportExporter();
 
     // 2. Map ExecutionContext to collector logs
@@ -80,7 +99,7 @@ export class ReportGenerator implements IReportGenerator {
 
         collector.addAPILog({
           timestamp: req.timestamp,
-          method: (req.method as any) || 'GET',
+          method: (req.method || 'GET') as 'GET' | 'POST' | 'PUT' | 'DELETE' | 'PATCH',
           endpoint: pathname,
           fullUrl: req.url,
           headers: {}, // raw headers not available in flat records
@@ -115,15 +134,23 @@ export class ReportGenerator implements IReportGenerator {
       const stepStatus: 'passed' | 'failed' | 'not_reached' = 
         s.status === 'passed' ? 'passed' : s.status === 'failed' ? 'failed' : 'not_reached';
 
+      // Append captured failure context (page URL + DOM snapshot) to failed steps
+      // so it lands in the bug's reproduction details.
+      let actualResult = s.status === 'passed' ? 'Completed successfully' : s.error || 'Action failed';
+      if (s.status === 'failed') {
+        if (s.pageUrl) actualResult += `\nPage URL at failure: ${s.pageUrl}`;
+        if (s.domSnapshotPath) actualResult += `\nDOM snapshot: ${s.domSnapshotPath}`;
+      }
+
       return {
         id: `step-${Math.random().toString(36).substring(2, 11)}`,
         reportId,
         stepNumber: s.stepIndex,
         action: s.step.rawText,
-        expectedResult: s.step.type === 'validation' 
-          ? `Assertion: ${s.step.targetField} is ${s.step.validation}` 
+        expectedResult: s.step.type === 'validation'
+          ? `Assertion: ${s.step.targetField} is ${s.step.validation}`
           : `Interact with element: ${s.step.targetField}`,
-        actualResult: s.status === 'passed' ? 'Completed successfully' : s.error || 'Action failed',
+        actualResult,
         status: stepStatus,
         errorMessage: s.error,
         screenshotPath: s.screenshotPath || undefined,
@@ -143,8 +170,10 @@ export class ReportGenerator implements IReportGenerator {
       videoPath: context.testSuiteResults?.[0]?.videoPath || undefined
     };
 
-    // 3. Perform Bug Generation & Jira Mock creation if failed
+    // 3. Bug generation on failure. The draft (evidence + RCA) is always produced;
+    //    a Jira issue is only created when autoFileBug is set (Phase 4.4).
     let bugReport: BugReport | undefined;
+    let bugSummary: BugReportSummary | undefined;
     if (summary.status === 'failed') {
       const testTitle = summary.title;
       bugReport = await bugGen.generateBugReport(
@@ -155,13 +184,31 @@ export class ReportGenerator implements IReportGenerator {
         collector.getConsoleLogs()
       );
 
-      try {
-        const jiraResult = await jiraClient.createIssue(bugReport);
-        bugReport.jiraIssueId = jiraResult.issueId;
-        bugReport.jiraUrl = jiraResult.url;
-      } catch (err) {
-        logger.error('Failed to generate mock Jira issue', err);
+      let disposition: 'drafted' | 'filed' = 'drafted';
+      if (options?.autoFileBug) {
+        try {
+          const jiraResult = await jiraClient.createIssue(bugReport);
+          bugReport.jiraIssueId = jiraResult.issueId;
+          bugReport.jiraUrl = jiraResult.url;
+          disposition = 'filed';
+          logger.info(`Filed bug as Jira issue ${jiraResult.issueId} (${jiraMock ? 'mock' : 'real'})`);
+        } catch (err) {
+          logger.error('Failed to create Jira issue; leaving bug as draft', err);
+        }
       }
+
+      bugSummary = {
+        id: bugReport.id,
+        title: bugReport.title,
+        severity: bugReport.severity,
+        category: bugReport.category,
+        rootCause: bugReport.rootCause,
+        suggestedFix: bugReport.suggestedFix,
+        disposition,
+        jiraIssueId: bugReport.jiraIssueId,
+        jiraUrl: bugReport.jiraUrl,
+        jiraMock: disposition === 'filed' ? jiraMock : undefined,
+      };
     }
 
     // 4. Generate Premium HTML
@@ -185,8 +232,8 @@ export class ReportGenerator implements IReportGenerator {
       summary,
       details: {
         ...context,
-        bugReport: bugReport || null // Attach the bug details to JSON payload
-      } as any
+        bugReport: bugSummary, // typed summary surfaced to the API/UI
+      },
     };
 
     // Save JSON and update history log

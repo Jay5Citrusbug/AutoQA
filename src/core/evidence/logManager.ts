@@ -7,17 +7,16 @@ export interface ILogManager {
 }
 
 export class LogManager implements ILogManager {
-  private consoleBuffer: Map<string, ConsoleMessageRecord[]> = new Map();
-  private networkBuffer: Map<string, NetworkErrorRecord[]> = new Map();
+  // Keyed by the Page object itself so parallel suites (even with identical
+  // viewports) never share or overwrite each other's buffers.
+  private buffers: WeakMap<Page, { consoleLogs: ConsoleMessageRecord[]; networkErrors: NetworkErrorRecord[] }> =
+    new WeakMap();
 
   public startListeners(page: Page): void {
-    const pageId = page.viewportSize() ? `${page.viewportSize()?.width}-${page.viewportSize()?.height}` : 'page-session';
-    
     const consoleLogs: ConsoleMessageRecord[] = [];
     const networkErrors: NetworkErrorRecord[] = [];
 
-    this.consoleBuffer.set(pageId, consoleLogs);
-    this.networkBuffer.set(pageId, networkErrors);
+    this.buffers.set(page, { consoleLogs, networkErrors });
 
     // Listen to console logs
     page.on('console', (msg) => {
@@ -54,18 +53,11 @@ export class LogManager implements ILogManager {
   }
 
   public collect(page: Page): { consoleLogs: ConsoleMessageRecord[]; networkErrors: NetworkErrorRecord[] } {
-    const pageId = page.viewportSize() ? `${page.viewportSize()?.width}-${page.viewportSize()?.height}` : 'page-session';
-    
-    const consoleLogs = this.consoleBuffer.get(pageId) || [];
-    const networkErrors = this.networkBuffer.get(pageId) || [];
-
-    // Clear buffers
-    this.consoleBuffer.delete(pageId);
-    this.networkBuffer.delete(pageId);
-
+    const buf = this.buffers.get(page) || { consoleLogs: [], networkErrors: [] };
+    this.buffers.delete(page);
     return {
-      consoleLogs,
-      networkErrors,
+      consoleLogs: buf.consoleLogs,
+      networkErrors: buf.networkErrors,
     };
   }
 }

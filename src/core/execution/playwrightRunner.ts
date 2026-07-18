@@ -5,6 +5,8 @@ import {
   LocatorMap,
   TestSuiteResult,
   NetworkRequestRecord,
+  ConsoleMessageRecord,
+  NetworkErrorRecord,
 } from '@/types/execution';
 import { ParsedStep } from '@/types/testCase';
 import { BrowserEngine, DeviceMode } from '@/types/mvp';
@@ -12,6 +14,7 @@ import { TestCaseParser } from '../parser/testCaseParser';
 import { ElementDiscoveryEngine } from '../discovery/elementDiscovery';
 import { Validator } from '../validation/validator';
 import { ScreenshotManager } from '../evidence/screenshotManager';
+import { DomSnapshotManager } from '../evidence/domSnapshotManager';
 import { LogManager } from '../evidence/logManager';
 import { ReportGenerator } from '../reporting/reportGenerator';
 import { PlaywrightGenerator } from '../generator/playwrightGenerator';
@@ -77,6 +80,8 @@ export interface RunConfig {
   generateScript?: boolean;
   /** Re-run each generated spec headless to confirm it replays. Slow (~doubles runtime); off by default. */
   verifyScript?: boolean;
+  /** On failure, file the drafted bug as a Jira issue (real if configured, else mock). Off by default. */
+  autoFileBug?: boolean;
   captureScreenshots?: boolean;
   captureConsoleLogs?: boolean;
   captureNetworkLogs?: boolean;
@@ -108,6 +113,7 @@ export class PlaywrightRunner implements IPlaywrightRunner {
   private discovery: ElementDiscoveryEngine;
   private validator: Validator;
   private screenshotManager: ScreenshotManager;
+  private domSnapshotManager: DomSnapshotManager;
   private logManager: LogManager;
   private reportGenerator: ReportGenerator;
   private scriptGenerator: PlaywrightGenerator;
@@ -118,6 +124,7 @@ export class PlaywrightRunner implements IPlaywrightRunner {
     this.discovery = new ElementDiscoveryEngine();
     this.validator = new Validator();
     this.screenshotManager = new ScreenshotManager();
+    this.domSnapshotManager = new DomSnapshotManager();
     this.logManager = new LogManager();
     this.reportGenerator = new ReportGenerator();
     this.scriptGenerator = new PlaywrightGenerator();
@@ -211,6 +218,8 @@ export class PlaywrightRunner implements IPlaywrightRunner {
       if (sr.networkRequests) {
         allNetworkRequests.push(...sr.networkRequests);
       }
+      if (sr.consoleLogs) context.consoleLogs.push(...sr.consoleLogs);
+      if (sr.networkErrors) context.networkErrors.push(...sr.networkErrors);
     }
     context.networkRequests = allNetworkRequests;
 
@@ -219,10 +228,8 @@ export class PlaywrightRunner implements IPlaywrightRunner {
     context.endTime = new Date().toISOString();
     context.durationMs = Date.now() - new Date(context.startTime).getTime();
 
-    // ---- Generate aggregate HTML report ----
-    const reportPayload = await this.reportGenerator.generate(context);
-
-    // ---- Generate Playwright spec for each suite ----
+    // ---- Generate Playwright spec for each suite FIRST, so the report (and any
+    //      auto-filed bug) is produced once with script paths already attached. ----
     if (config?.generateScript !== false) {
       for (const sr of suiteResults) {
         if (!sr.generatedScriptPath) {
@@ -253,11 +260,13 @@ export class PlaywrightRunner implements IPlaywrightRunner {
 
       // Use the first suite's script path as the primary
       context.generatedScriptPath = suiteResults[0]?.generatedScriptPath;
-
-      // Re-save report with script paths
-      reportPayload.details.generatedScriptPath = context.generatedScriptPath;
-      await this.reportGenerator.generate(reportPayload.details);
     }
+
+    // ---- Generate the report once (drafts/files a bug on failure per config). ----
+    const reportPayload = await this.reportGenerator.generate(context, {
+      autoFileBug: config?.autoFileBug,
+    });
+    context.bugReport = reportPayload.details.bugReport;
 
     runRegistry.finish(runId);
 
@@ -278,6 +287,8 @@ export class PlaywrightRunner implements IPlaywrightRunner {
     const suiteStart = Date.now();
     const stepResults: StepExecutionResult[] = [];
     const networkRequests: NetworkRequestRecord[] = [];
+    let suiteConsoleLogs: ConsoleMessageRecord[] = [];
+    let suiteNetworkErrors: NetworkErrorRecord[] = [];
     const requestTimes = new Map<Request, number>();
 
     const settings = fileHelper.getSettings();
@@ -586,12 +597,22 @@ export class PlaywrightRunner implements IPlaywrightRunner {
           stepLogs.push(`ERROR: ${result.error}`);
           suiteFailed = true;
 
-          // Capture failure screenshot
+          // ---- Failure-context capture (Phase 4.1): screenshot + URL + DOM ----
+          result.pageUrl = await Promise.resolve(page.url()).catch(() => undefined);
+
           if (config?.captureScreenshots !== false) {
             const errShot = await this.screenshotManager
               .capture(page, `${runId}-${suite.id}`, stepIndex)
               .catch(() => undefined);
             if (errShot) result.screenshotPath = errShot;
+          }
+
+          const domPath = await this.domSnapshotManager
+            .capture(page, `${runId}-${suite.id}`, stepIndex)
+            .catch(() => undefined);
+          if (domPath) {
+            result.domSnapshotPath = domPath;
+            stepLogs.push(`DOM snapshot saved: ${domPath}`);
           }
         }
 
@@ -599,11 +620,10 @@ export class PlaywrightRunner implements IPlaywrightRunner {
         stepResults.push(result);
       }
 
-      // Collect telemetry
+      // Collect console/network telemetry for this suite (drives bug evidence + RCA).
       const logsPayload = this.logManager.collect(page);
-      if (config?.captureConsoleLogs) {
-        // stored on parent context aggregate
-      }
+      suiteConsoleLogs = logsPayload.consoleLogs;
+      suiteNetworkErrors = logsPayload.networkErrors;
     } catch (fatalErr: any) {
       logger.error(`[${suite.id}] Fatal browser error`, fatalErr);
       // Mark all remaining steps as failed
@@ -667,6 +687,8 @@ export class PlaywrightRunner implements IPlaywrightRunner {
       stepResults,
       videoPath: videoPath || undefined,
       networkRequests,
+      consoleLogs: suiteConsoleLogs,
+      networkErrors: suiteNetworkErrors,
     };
   }
 }

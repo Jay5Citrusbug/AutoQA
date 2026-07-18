@@ -55,7 +55,9 @@ node_modules/
 /test-runs/
 /generated-tests/
 /reports/
+/dom-snapshots/
 /public/reports/
 /public/screenshots/
 /public/generated-tests/
 /public/videos/
+/public/dom-snapshots/

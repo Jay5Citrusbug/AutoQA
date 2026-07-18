@@ -125,13 +125,21 @@ Options (decide at start of phase):
 ---
 
 ## Phase 4 — Self-Healing Regression (≈2 weeks)
+> **Partial — non-AI pieces done 2026-07-18.** 4.1 (failure-context capture) and 4.4 (auto-draft/file bug)
+> implemented: DOM snapshot + failing URL captured on every step failure; console logs now flow into the
+> report (LogManager keyed per-page); bug is always drafted on failure with RCA, and filed as a Jira issue
+> only when `config.autoFileBug` is set (real Jira via `JIRA_*` env, else mock); drafted/filed bug + evidence
+> surfaced in the run-test API response. Verified end-to-end: draft → no ticket; file → mock ticket QA-xxxxx.
+> **Deferred to after Phase 2 (needs the AI executor):** 4.2 AI triage (real-bug vs UI-change) and
+> 4.3 self-healing. Also note: the current RCA/severity uses the existing heuristic bug-generator — AI triage
+> in 4.2 will replace its accuracy.
 
 | # | Task |
 |---|------|
-| 4.1 | On replay failure, capture failure context (error, screenshot, DOM snapshot at failure point). |
-| 4.2 | AI triage: re-execute the test case from natural-language intent. Both fail → **likely real bug**; AI passes where script failed → **UI changed, heal the script**. |
-| 4.3 | Healing flow: regenerate script from the new recorded trail, auto-verify, save as new version with a human-readable diff ("login button locator changed from #btn-login to getByRole('button', {name:'Sign in'})"), flag for review. |
-| 4.4 | Bug flow: feed failure evidence into the existing `report-bug-tracker` module → auto-draft Jira ticket with screenshots, video, network log, console errors. |
+| 4.1 | ✅ On replay failure, capture failure context (error, screenshot, DOM snapshot at failure point). |
+| 4.2 | ⏳ (needs Phase 2) AI triage: re-execute the test case from natural-language intent. Both fail → **likely real bug**; AI passes where script failed → **UI changed, heal the script**. |
+| 4.3 | ⏳ (needs Phase 2) Healing flow: regenerate script from the new recorded trail, auto-verify, save as new version with a human-readable diff ("login button locator changed from #btn-login to getByRole('button', {name:'Sign in'})"), flag for review. |
+| 4.4 | ✅ Bug flow: feed failure evidence into the existing `report-bug-tracker` module → auto-draft Jira ticket with screenshots, video, network log, console errors. |
 
 **Acceptance:** rename a button on a test app → regression fails → platform heals the script automatically and shows the diff; break the login flow → platform files a Jira draft instead.
 

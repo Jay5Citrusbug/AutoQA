@@ -18,6 +18,7 @@ export const RunTestRequestSchema = z.object({
   config: z.object({
     generateScript: z.boolean().default(true),
     verifyScript: z.boolean().default(false),
+    autoFileBug: z.boolean().default(false),
     captureScreenshots: z.boolean().default(true),
     captureConsoleLogs: z.boolean().default(false),
     captureNetworkLogs: z.boolean().default(false),
