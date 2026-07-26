@@ -639,6 +639,26 @@ export class TestCaseParser implements ITestCaseParser {
   }
 
   /**
+   * Session-reuse directives. Written on the TC header or on their own line:
+   *   @fresh-login / @no-reuse   -> always log in for real in this test case
+   *   @reuse-session             -> reuse a cached login even if this TC looks like a login test
+   */
+  private static readonly FRESH_LOGIN_DIRECTIVE = /@(?:fresh[-_ ]?login|no[-_ ]?(?:session[-_ ]?)?reuse)\b/i;
+  private static readonly REUSE_SESSION_DIRECTIVE = /@reuse[-_ ]?session\b/i;
+  private static readonly HAS_DIRECTIVE = /@(?:fresh[-_ ]?login|no[-_ ]?(?:session[-_ ]?)?reuse|reuse[-_ ]?session)\b/i;
+
+  /** Strips directive tokens from a line. A fresh regex per call — /g regexes carry lastIndex state. */
+  private stripDirectives(line: string): string {
+    return line.replace(/@(?:fresh[-_ ]?login|no[-_ ]?(?:session[-_ ]?)?reuse|reuse[-_ ]?session)\b/gi, '');
+  }
+
+  /** True when a line carries nothing but session directives (so it is not a step). */
+  private isDirectiveOnlyLine(line: string): boolean {
+    if (!TestCaseParser.HAS_DIRECTIVE.test(line)) return false;
+    return this.stripDirectives(line).trim().length === 0;
+  }
+
+  /**
    * Splits raw editor text into independent test case suites.
    * Lines that start with "TC01:", "TC02:", "Test Case 1:", etc. act as suite separators.
    * Each suite gets its own independent ParsedStep[] so it can run in isolation.
@@ -652,6 +672,7 @@ export class TestCaseParser implements ITestCaseParser {
     let currentSuiteId = '';
     let currentTitle = '';
     let currentLines: string[] = [];
+    let currentDirectiveText = '';
 
     const flushSuite = () => {
       if (!currentSuiteId && currentLines.length === 0) return;
@@ -659,7 +680,13 @@ export class TestCaseParser implements ITestCaseParser {
       const title = currentTitle || id;
       const steps = this.parse(currentLines);
       if (steps.length > 0) {
-        suites.push({ id, title, steps });
+        suites.push({
+          id,
+          title,
+          steps,
+          freshLogin: TestCaseParser.FRESH_LOGIN_DIRECTIVE.test(currentDirectiveText) || undefined,
+          forceReuse: TestCaseParser.REUSE_SESSION_DIRECTIVE.test(currentDirectiveText) || undefined,
+        });
       }
     };
 
@@ -673,8 +700,13 @@ export class TestCaseParser implements ITestCaseParser {
         currentSuiteId = headerMatch[1].toUpperCase().replace(/\s+/g, '');
         currentTitle = trimmed;
         currentLines = [];
+        currentDirectiveText = trimmed;
+      } else if (this.isDirectiveOnlyLine(trimmed)) {
+        // A directive on its own line configures the suite, it is not a step.
+        currentDirectiveText += ` ${trimmed}`;
       } else {
-        currentLines.push(line);
+        currentDirectiveText += ` ${trimmed}`;
+        currentLines.push(this.stripDirectives(line));
       }
     }
 

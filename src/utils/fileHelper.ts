@@ -190,7 +190,10 @@ export const fileHelper = {
       videoCapture: 'off',
       headlessMode: true,
       defaultTimeout: 30,
-      reportFormat: 'both'
+      reportFormat: 'both',
+      // Log in once per module and share the authenticated session across test cases.
+      reuseSession: true,
+      sessionTtlMinutes: 20
     };
     const settings = this.readJson<any>(settingsPath);
     return settings ? { ...defaults, ...settings } : defaults;

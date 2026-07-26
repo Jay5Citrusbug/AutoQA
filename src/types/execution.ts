@@ -26,6 +26,12 @@ export interface StepExecutionResult {
   // Failure-context evidence (populated only when a step fails).
   domSnapshotPath?: string;
   pageUrl?: string;
+  /**
+   * True when this login step was satisfied by a cached authenticated session
+   * instead of being replayed through the UI. The selector/screenshot carried
+   * here come from the one real login that primed the session.
+   */
+  reusedSession?: boolean;
 }
 
 export interface ConsoleMessageRecord {
@@ -57,6 +63,10 @@ export interface TestSuite {
   id: string;          // e.g. "TC01"
   title: string;       // full header line
   steps: ParsedStep[];
+  /** `@fresh-login` in the test text — always perform a real login for this TC. */
+  freshLogin?: boolean;
+  /** `@reuse-session` in the test text — reuse a cached login even if this TC looks like a login test. */
+  forceReuse?: boolean;
 }
 
 export interface ExecutionContext {
@@ -80,6 +90,8 @@ export interface ExecutionContext {
   testSuiteResults?: TestSuiteResult[];
   // Auto-drafted/filed bug for a failed run (Phase 4.4)
   bugReport?: BugReportSummary;
+  /** How login-session reuse behaved for this run. */
+  sessionReuse?: SessionReuseSummary;
 }
 
 export type ScriptVerificationStatus = 'verified' | 'broken' | 'skipped' | 'error';
@@ -103,6 +115,23 @@ export interface TestSuiteResult {
   scriptVerification?: ScriptVerificationResult;
   consoleLogs?: ConsoleMessageRecord[];
   networkErrors?: NetworkErrorRecord[];
+  /** True when this suite started from a cached authenticated session (login UI skipped). */
+  sessionReused?: boolean;
+  /** True when this suite failed on a reused session and was re-run with a real login. */
+  retriedWithFreshLogin?: boolean;
+}
+
+/** Aggregate view of how session reuse behaved during a run (surfaced in reports/UI). */
+export interface SessionReuseSummary {
+  enabled: boolean;
+  /** Distinct login flows primed during this run. */
+  primedLogins: number;
+  /** Suites that started from a cached session instead of logging in. */
+  reusedSuites: number;
+  /** Suites that had to log in themselves (negative-login, logout, or cache miss). */
+  freshLoginSuites: number;
+  /** Estimated wall-clock saved, summed from the primed login durations. */
+  estimatedSavedMs: number;
 }
 
 /** Auto-drafted bug summary surfaced on a failed run (Phase 4.4). */

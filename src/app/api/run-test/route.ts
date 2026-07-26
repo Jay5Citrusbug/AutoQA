@@ -89,8 +89,10 @@ export async function POST(request: NextRequest) {
         consoleLogs: r.logs,
         domSnapshot: r.domSnapshotPath,
         pageUrl: r.pageUrl,
+        reusedSession: r.reusedSession,
       })),
       bugReport: context.bugReport,
+      sessionReuse: context.sessionReuse,
       generatedScriptPath: context.generatedScriptPath,
       videoPath: context.testSuiteResults?.[0]?.videoPath,
       networkRequests: context.networkRequests,
@@ -102,6 +104,7 @@ export async function POST(request: NextRequest) {
         durationMs: ts.durationMs,
         generatedScriptPath: ts.generatedScriptPath,
         scriptVerification: ts.scriptVerification,
+        sessionReused: ts.sessionReused,
       })),
     };
 

@@ -33,6 +33,8 @@ export default function RunTestPage() {
     captureConsoleLogs: false,
     captureNetworkLogs: false,
     headless: true,
+    reuseSession: true,
+    reuseBrowser: true,
   });
 
   // --- RUNTIME STATE ---
@@ -89,6 +91,13 @@ export default function RunTestPage() {
   const [runDuration, setRunDuration] = useState(0);
   const [selectedFailedStep, setSelectedFailedStep] = useState<StepExecution | null>(null);
   const [videoPath, setVideoPath] = useState<string | undefined>(undefined);
+  const [sessionReuse, setSessionReuse] = useState<{
+    enabled: boolean;
+    primedLogins: number;
+    reusedSuites: number;
+    freshLoginSuites: number;
+    estimatedSavedMs: number;
+  } | undefined>(undefined);
   const [networkRequests, setNetworkRequests] = useState<any[]>([]);
   const [activeAuditTab, setActiveAuditTab] = useState<'details' | 'video' | 'network'>('details');
   const [logFilter, setLogFilter] = useState<'all' | 'info' | 'debug' | 'error'>('all');
@@ -494,6 +503,7 @@ ${logs}
       setRunDuration(data.durationMs);
       setVideoPath(data.videoPath);
       setNetworkRequests(data.networkRequests || []);
+      setSessionReuse(data.sessionReuse);
 
       // Map step results
       const results: StepExecution[] = data.steps.map((s: any) => ({
@@ -506,7 +516,8 @@ ${logs}
         error: s.error,
         expectedResult: s.status === 'failed' ? 'Assertion verify target element text visible.' : undefined,
         actualResult: s.error ? s.error : undefined,
-        consoleLogs: s.consoleLogs || []
+        consoleLogs: s.consoleLogs || [],
+        reusedSession: s.reusedSession
       }));
 
       setStepResults(results);
@@ -942,6 +953,8 @@ ${logs}
                     { id: 'captureConsoleLogs', label: 'Capture Console Logs', desc: 'Record browser STDOUT/STDERR' },
                     { id: 'captureNetworkLogs', label: 'Capture Network Logs', desc: 'HAR file generation for API calls' },
                     { id: 'headless', label: 'Headless Execution', desc: 'Optimized performance (no UI)' },
+                    { id: 'reuseSession', label: 'Reuse Login Session', desc: 'Log in once, share it across all test cases' },
+                    { id: 'reuseBrowser', label: 'Reuse Browser Process', desc: 'One browser for the whole run, isolated context per test case' },
                   ].map((cfg) => {
                     const active = (config as any)[cfg.id];
                     return (
@@ -990,6 +1003,18 @@ ${logs}
                   <div className="flex justify-between items-center">
                     <span className="text-zinc-500 font-semibold">Mode:</span>
                     <span className="font-mono text-zinc-300 font-bold">{config.headless ? 'Headless' : 'Headed'}</span>
+                  </div>
+                  <div className="flex justify-between items-center">
+                    <span className="text-zinc-500 font-semibold">Browser use:</span>
+                    <span className={`font-mono font-bold ${config.reuseBrowser ? 'text-emerald-400' : 'text-zinc-300'}`}>
+                      {config.reuseBrowser ? '1 process, N contexts' : '1 process per case'}
+                    </span>
+                  </div>
+                  <div className="flex justify-between items-center">
+                    <span className="text-zinc-500 font-semibold">Login:</span>
+                    <span className={`font-mono font-bold ${config.reuseSession ? 'text-emerald-400' : 'text-zinc-300'}`}>
+                      {config.reuseSession ? 'Shared session' : 'Per test case'}
+                    </span>
                   </div>
                 </div>
               </div>
@@ -1297,6 +1322,34 @@ ${logs}
             ))}
           </div>
 
+          {/* Session reuse summary */}
+          {sessionReuse?.enabled && sessionReuse.reusedSuites > 0 && (
+            <div className="border border-emerald-500/30 bg-emerald-500/5 rounded-2xl px-6 py-4 flex flex-wrap items-center gap-x-6 gap-y-2">
+              <span className="text-sm sm:text-base font-bold text-emerald-300 flex items-center gap-2">
+                <Zap className="h-4 w-4" />
+                Login session reused
+              </span>
+              <span className="text-xs sm:text-sm font-mono text-zinc-400">
+                {sessionReuse.reusedSuites} test case{sessionReuse.reusedSuites === 1 ? '' : 's'} started from a cached login
+              </span>
+              {sessionReuse.primedLogins > 0 && (
+                <span className="text-xs sm:text-sm font-mono text-zinc-400">
+                  {sessionReuse.primedLogins} shared login performed
+                </span>
+              )}
+              {sessionReuse.freshLoginSuites > 0 && (
+                <span className="text-xs sm:text-sm font-mono text-zinc-400">
+                  {sessionReuse.freshLoginSuites} logged in for real
+                </span>
+              )}
+              {sessionReuse.estimatedSavedMs > 0 && (
+                <span className="text-xs sm:text-sm font-mono font-bold text-emerald-400">
+                  ~{(sessionReuse.estimatedSavedMs / 1000).toFixed(1)}s of login time skipped
+                </span>
+              )}
+            </div>
+          )}
+
           {/* Results Table Panel */}
           <div className="border border-zinc-800 bg-[#101524] rounded-2xl flex flex-col overflow-hidden">
             {/* Table Header toolbar */}
@@ -1351,6 +1404,11 @@ ${logs}
                         </td>
                         <td className="px-6 py-4 text-white font-medium max-w-xs truncate">
                           {r.rawText}
+                          {r.reusedSession && (
+                            <span className="ml-2 align-middle text-[10px] sm:text-xs font-mono font-bold uppercase tracking-wider text-emerald-400 border border-emerald-500/30 bg-emerald-500/10 rounded px-1.5 py-0.5">
+                              cached login
+                            </span>
+                          )}
                         </td>
                         <td className="px-6 py-4 text-zinc-500 font-mono">{(r.durationMs / 1000).toFixed(1)}s</td>
                         <td className="px-6 py-4">

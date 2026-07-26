@@ -33,6 +33,8 @@ export interface StepExecution {
   actualResult?: string;
   // Which test case this step belongs to
   tcId?: string;
+  /** True when this login step was satisfied by a cached session instead of being replayed. */
+  reusedSession?: boolean;
 }
 
 export interface MvpExecution {

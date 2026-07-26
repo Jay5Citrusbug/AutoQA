@@ -23,6 +23,12 @@ export const RunTestRequestSchema = z.object({
     captureConsoleLogs: z.boolean().default(false),
     captureNetworkLogs: z.boolean().default(false),
     headless: z.boolean().default(true),
+    /** Log in once and share the session across test cases with the same login flow. */
+    reuseSession: z.boolean().default(true),
+    /** Run all test cases in one browser process (isolated context each) instead of one browser per TC. */
+    reuseBrowser: z.boolean().default(true),
+    /** Lifetime of a cached login session, in minutes. */
+    sessionTtlMinutes: z.number().int().min(1).max(240).default(20),
   }),
 });
 
@@ -78,11 +84,20 @@ export interface APIRunTestResponse {
     tcId?: string;
   }[];
   generatedScriptPath?: string;
+  /** Summary of how login-session reuse behaved for this run. */
+  sessionReuse?: {
+    enabled: boolean;
+    primedLogins: number;
+    reusedSuites: number;
+    freshLoginSuites: number;
+    estimatedSavedMs: number;
+  };
   testSuites?: {
     tcId: string;
     title: string;
     status: 'passed' | 'failed';
     durationMs: number;
     generatedScriptPath?: string;
+    sessionReused?: boolean;
   }[];
 }

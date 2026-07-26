@@ -36,6 +36,12 @@ const NON_INTERACTIVE_TAGS = new Set(['form', 'fieldset', 'html', 'body']);
 // rather than acting on a wrong element or a fabricated generic selector.
 const MIN_CONFIDENCE = 35;
 
+// A client-rendered app can paint its form a beat after the page reports 'load',
+// so a single DOM pass may legitimately find nothing. Re-scan a few times before
+// declaring the element missing — this only costs time on the failure path.
+const DISCOVERY_ATTEMPTS = 4;
+const DISCOVERY_RETRY_DELAY_MS = 700;
+
 /** Thrown when no element can be confidently matched for a field name. */
 export class ElementNotFoundError extends Error {
   constructor(public target: string, public bestScore: number) {
@@ -73,8 +79,30 @@ export interface IElementDiscoveryEngine {
 export class ElementDiscoveryEngine implements IElementDiscoveryEngine {
   /**
    * discover — Find the best-matching DOM element for the given field name.
+   *
+   * Retries the scan a few times: an element that has not rendered yet is a timing
+   * problem, not a missing element, and failing on the first pass makes runs flaky
+   * on client-rendered apps.
    */
   public async discover(page: Page, fieldName: string): Promise<DiscoveryMatch> {
+    let lastError: unknown;
+
+    for (let attempt = 1; attempt <= DISCOVERY_ATTEMPTS; attempt++) {
+      try {
+        return await this._discoverOnce(page, fieldName);
+      } catch (err) {
+        lastError = err;
+        if (!(err instanceof ElementNotFoundError) || attempt === DISCOVERY_ATTEMPTS) break;
+        dlog(`Attempt ${attempt} found nothing for "${fieldName}" — re-scanning shortly`);
+        await page.waitForTimeout(DISCOVERY_RETRY_DELAY_MS).catch(() => {});
+      }
+    }
+
+    throw lastError;
+  }
+
+  /** One full discovery pass over the current DOM. */
+  private async _discoverOnce(page: Page, fieldName: string): Promise<DiscoveryMatch> {
     const rawTarget = fieldName.trim();
     const targetText = rawTarget.toLowerCase().replace(/[\s_\-]+/g, ' ').trim();
     const ctx: ScoringContext = { targetText, rawTarget };
