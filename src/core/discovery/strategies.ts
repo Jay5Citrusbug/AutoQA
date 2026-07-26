@@ -47,6 +47,14 @@ function variations(target: string): string[] {
   return Array.from(results);
 }
 
+// Helper to strip structural element nouns from target string
+function stripElementNouns(target: string): string {
+  return target
+    .replace(/\b(button|btn|field|input|box|textbox|label|link|dropdown|select|icon|heading|header)\b/gi, '')
+    .replace(/[\s_\-]+/g, ' ')
+    .trim() || target.trim();
+}
+
 // ---------------------------------------------------------------------------
 // STRATEGY 1: Semantic Type Inference
 // Maps user words → input[type=…] selectors
@@ -74,25 +82,37 @@ export function semanticTypeStrategy(target: string): StrategyCandidate[] {
 // ---------------------------------------------------------------------------
 export function ariaRoleStrategy(target: string): StrategyCandidate[] {
   const t = target.toLowerCase().trim();
+  const cleaned = stripElementNouns(target);
   const candidates: StrategyCandidate[] = [];
 
   // Buttons and links — match by text
-  const buttonKeywords = ['login', 'signin', 'sign in', 'sign-in', 'submit', 'continue', 'next', 'save', 'cancel', 'close', 'ok', 'confirm', 'register', 'signup', 'logout', 'send'];
-  if (buttonKeywords.some(k => t.includes(k) || k.includes(t))) {
+  const buttonKeywords = ['login', 'log in', 'signin', 'sign in', 'sign-in', 'submit', 'continue', 'next', 'save', 'cancel', 'close', 'ok', 'confirm', 'register', 'signup', 'sign up', 'logout', 'send'];
+  if (buttonKeywords.some(k => t.includes(k) || k.includes(t)) || cleaned) {
+    const textToMatch = cleaned || target;
     candidates.push({
-      selector: `button:has-text("${target}")`,
-      reason: `Button text match for "${target}"`,
-      confidence: 85,
+      selector: `button:has-text("${textToMatch}")`,
+      reason: `Button has-text "${textToMatch}"`,
+      confidence: 88,
     });
     candidates.push({
-      selector: `[role="button"]:has-text("${target}")`,
-      reason: `Role=button text match for "${target}"`,
+      selector: `[role="button"]:has-text("${textToMatch}")`,
+      reason: `Role=button has-text "${textToMatch}"`,
+      confidence: 82,
+    });
+    candidates.push({
+      selector: `a:has-text("${textToMatch}")`,
+      reason: `Link has-text "${textToMatch}"`,
       confidence: 80,
     });
     candidates.push({
       selector: `input[type="submit"]`,
-      reason: `Submit input fallback for "${target}"`,
+      reason: `Submit input fallback`,
       confidence: 65,
+    });
+    candidates.push({
+      selector: `input[type="button"][value*="${textToMatch}" i]`,
+      reason: `Input button with value containing "${textToMatch}"`,
+      confidence: 75,
     });
   }
 
@@ -222,31 +242,42 @@ export function dataTestIdStrategy(target: string): StrategyCandidate[] {
 // ---------------------------------------------------------------------------
 export function textStrategy(target: string): StrategyCandidate[] {
   const candidates: StrategyCandidate[] = [];
-  candidates.push({
-    selector: `text="${target}"`,
-    reason: `Exact text content "${target}"`,
-    confidence: 88,
-  });
-  candidates.push({
-    selector: `text=${target}`,
-    reason: `Playwright text locator for "${target}"`,
-    confidence: 85,
-  });
-  candidates.push({
-    selector: `button:has-text("${target}")`,
-    reason: `Button has text "${target}"`,
-    confidence: 85,
-  });
-  candidates.push({
-    selector: `a:has-text("${target}")`,
-    reason: `Link has text "${target}"`,
-    confidence: 80,
-  });
-  candidates.push({
-    selector: `:has-text("${target}")`,
-    reason: `Any element has text "${target}"`,
-    confidence: 60,
-  });
+  const cleaned = stripElementNouns(target);
+  const targetsToTry = Array.from(new Set([target, cleaned])).filter(Boolean);
+
+  for (const t of targetsToTry) {
+    candidates.push({
+      selector: `text="${t}"`,
+      reason: `Exact text content "${t}"`,
+      confidence: 90,
+    });
+    candidates.push({
+      selector: `text=${t}`,
+      reason: `Playwright text locator for "${t}"`,
+      confidence: 86,
+    });
+    candidates.push({
+      selector: `button:has-text("${t}")`,
+      reason: `Button has text "${t}"`,
+      confidence: 88,
+    });
+    candidates.push({
+      selector: `a:has-text("${t}")`,
+      reason: `Link has text "${t}"`,
+      confidence: 82,
+    });
+    candidates.push({
+      selector: `[role="button"]:has-text("${t}")`,
+      reason: `Role=button has text "${t}"`,
+      confidence: 82,
+    });
+    candidates.push({
+      selector: `:has-text("${t}")`,
+      reason: `Any element has text "${t}"`,
+      confidence: 60,
+    });
+  }
+
   return candidates;
 }
 

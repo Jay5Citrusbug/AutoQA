@@ -1,6 +1,16 @@
 export type ActionType = 'fill' | 'click' | 'select' | 'check' | 'uncheck' | 'navigate' | 'wait';
 
-export type ValidationType = 'url' | 'text' | 'visible' | 'enabled' | 'success_msg' | 'error_msg';
+export type ValidationType =
+  | 'url'          // URL contains / matches value
+  | 'not_url'      // URL does NOT contain value
+  | 'text'         // Page body contains text
+  | 'not_text'     // Page body does NOT contain text
+  | 'visible'      // Element / text is visible on page
+  | 'not_visible'  // Element / text is hidden / not visible
+  | 'enabled'      // Element is enabled (interactive)
+  | 'disabled'     // Element is disabled (non-interactive)
+  | 'success_msg'  // A success banner / toast is visible
+  | 'error_msg';   // An error banner / toast is visible
 
 export interface ParsedStep {
   stepIndex: number;

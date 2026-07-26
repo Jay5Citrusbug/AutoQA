@@ -284,7 +284,7 @@ export class ElementDiscoveryEngine implements IElementDiscoveryEngine {
               ariaLabel: el.getAttribute('aria-label') || '',
               ariaDescribedby: el.getAttribute('aria-describedby') || '',
               labelText,
-              elementText: (el.textContent || el.getAttribute('value') || '').trim().substring(0, 80),
+              elementText: ((el as HTMLElement).innerText || el.textContent || el.getAttribute('value') || '').trim().substring(0, 120),
               classNames: Array.from(el.classList).join(' '),
               tagName: tag,
               role: el.getAttribute('role') || tag,

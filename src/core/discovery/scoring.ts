@@ -302,9 +302,9 @@ export const TYPE_INFERENCE: Record<string, string> = {
   range: 'range',
 };
 
-// Normalize a string: lowercase, strip spaces/dashes/underscores
+// Normalize a string: lowercase, strip all non-alphanumeric characters (symbols, spaces, arrows, punctuation)
 function norm(s: string): string {
-  return s.toLowerCase().replace(/[\s_\-]/g, '');
+  return s.toLowerCase().replace(/[^a-z0-9]/g, '');
 }
 
 // Check if haystack contains needle as a full word or exact substring
@@ -464,8 +464,17 @@ export function scoreElement(attrs: ElementAttributes, ctx: ScoringContext): Sco
     }
   }
 
-  // 5. Attribute bonuses (Aria-label, Label, Placeholder)
+  // 5. Attribute bonuses (Aria-label, Label, Element text, Placeholder)
   const normTarget = norm(target);
+
+  if (elemTextN && (elemTextN === normTarget || fuzzyMatch(elemTextN, normTarget, 90))) {
+    attributeBonus += 40;
+    reasons.push('elementText:exact');
+  } else if (elemTextN && (elemTextN.includes(normTarget) || normTarget.includes(elemTextN))) {
+    attributeBonus += 30;
+    reasons.push('elementText:contains');
+  }
+
   if (ariaLabelN && (ariaLabelN === normTarget || fuzzyMatch(ariaLabelN, normTarget, 90))) {
     attributeBonus += 35;
     reasons.push('aria-label:exact');

@@ -20,7 +20,6 @@ export class Validator implements IValidator {
     timeoutMs = VALIDATION_TIMEOUT_MS
   ): Promise<{ ok: boolean; lastValue?: string }> {
     const deadline = Date.now() + timeoutMs;
-    let lastValue: string | undefined;
 
     while (Date.now() < deadline) {
       try {
@@ -32,7 +31,7 @@ export class Validator implements IValidator {
       await new Promise<void>((r) => setTimeout(r, POLL_INTERVAL_MS));
     }
 
-    return { ok: false, lastValue };
+    return { ok: false };
   }
 
   public async validate(
@@ -46,66 +45,170 @@ export class Validator implements IValidator {
     try {
       switch (type) {
         // ------------------------------------------------------------------ //
-        // URL VALIDATION — waits up to 2 min for the URL to match            //
+        // URL VALIDATION                                                      //
+        //   1. Immediately checks if current URL already contains the value  //
+        //   2. Falls back to waitForURL (navigation events)                  //
+        //   3. Falls back to polling (SPA pushState routing)                 //
         // ------------------------------------------------------------------ //
         case 'url': {
           if (!value) {
             return { success: false, error: 'Expected URL value was not provided.' };
           }
 
-          let actualUrl = page.url();
+          /**
+           * Normalise a URL or path fragment for comparison.
+           * - Lowercases everything (case-insensitive comparison)
+           * - Strips fragment identifiers (#...)
+           * - Strips trailing slashes
+           * e.g. "https://app.com/Desktop/Home/" → "https://app.com/desktop/home"
+           */
+          const normalise = (u: string) =>
+            u.toLowerCase().replace(/#.*$/, '').replace(/\/+$/, '').trim();
 
-          // First try Playwright's built-in waitForURL which respects navigation events
+          const needle = normalise(value);
+
+          // ── 1. Check current URL immediately (zero wait) ──────────────────
+          // Common case: navigation already completed (e.g. after click + networkidle).
+          const currentUrl = page.url();
+          if (normalise(currentUrl).includes(needle)) {
+            return { success: true };
+          }
+
+          let actualUrl = currentUrl;
+
+          // ── 2. waitForURL — Playwright navigation-event based ─────────────
+          // Catches standard page loads and server-side redirects.
           try {
             await page.waitForURL(
-              (u) => u.toString().toLowerCase().includes(value.toLowerCase()),
+              (u) => normalise(u.toString()).includes(needle),
               { timeout: VALIDATION_TIMEOUT_MS }
             );
             return { success: true };
           } catch {
-            // waitForURL may not be available in all versions — fall back to polling
+            // timed out — fall through to polling
           }
 
-          // Polling fallback
+          // ── 3. Polling fallback — handles SPA pushState routing ───────────
           const { ok } = await this.waitUntil(async () => {
             actualUrl = page.url();
-            return actualUrl.toLowerCase().includes(value.toLowerCase());
+            return normalise(actualUrl).includes(needle);
           });
 
           if (!ok) {
             actualUrl = page.url();
             return {
               success: false,
-              error: `URL validation failed after ${VALIDATION_TIMEOUT_MS / 1000}s. Expected URL to contain "${value}", but actual URL was "${actualUrl}".`
+              error:
+                `URL validation failed after ${VALIDATION_TIMEOUT_MS / 1000}s. ` +
+                `Expected URL to contain "${value}", but actual URL was "${actualUrl}".\n\n` +
+                `Tip: If this is a single-page app (SPA), add "wait 2 seconds" before the URL assertion ` +
+                `to allow client-side routing to complete.`,
             };
           }
           break;
         }
 
         // ------------------------------------------------------------------ //
-        // VISIBILITY VALIDATION — waits up to 2 min for element to appear    //
+        // NOT_URL VALIDATION — verifies URL does NOT contain the value        //
         // ------------------------------------------------------------------ //
-        case 'visible': {
-          const selector =
-            target.startsWith('#') || target.startsWith('.') || target.includes('[')
-              ? target
-              : `text="${target}"`;
+        case 'not_url': {
+          if (!value) {
+            return { success: false, error: 'Expected URL value was not provided.' };
+          }
 
-          const locator = page.locator(selector).first();
+          const normalise = (u: string) =>
+            u.toLowerCase().replace(/#.*$/, '').replace(/\/+$/, '').trim();
 
-          try {
-            await locator.waitFor({ state: 'visible', timeout: VALIDATION_TIMEOUT_MS });
-          } catch {
+          const needle = normalise(value);
+          let actualUrl = page.url();
+
+          // Wait up to 5s to ensure the URL does not match
+          const { ok } = await this.waitUntil(async () => {
+            actualUrl = page.url();
+            return !normalise(actualUrl).includes(needle);
+          }, 5_000);
+
+          if (!ok || normalise(actualUrl).includes(needle)) {
             return {
               success: false,
-              error: `Visibility validation failed after ${VALIDATION_TIMEOUT_MS / 1000}s. Element matching "${target}" never became visible.`
+              error: `URL negative validation failed. Expected URL to NOT contain "${value}", but current URL is "${actualUrl}".`
             };
           }
           break;
         }
 
         // ------------------------------------------------------------------ //
-        // ENABLED STATE VALIDATION — waits up to 2 min for element to enable //
+        // VISIBILITY VALIDATION — waits up to 15s for element/text to appear //
+        // ------------------------------------------------------------------ //
+        case 'visible': {
+          const targetStr = target || value || '';
+          if (!targetStr) {
+            return { success: false, error: 'Target for visibility validation was not provided.' };
+          }
+
+          const isCssSelector = targetStr.startsWith('#') || targetStr.startsWith('.') || targetStr.includes('[');
+
+          const { ok } = await this.waitUntil(async () => {
+            if (isCssSelector) {
+              const locator = page.locator(targetStr).first();
+              return await locator.isVisible().catch(() => false);
+            } else {
+              // Try Playwright getByText (case-insensitive substring match)
+              const locator = page.getByText(targetStr).first();
+              if (await locator.isVisible().catch(() => false)) return true;
+
+              // Fallback: check if target text is contained anywhere in rendered body text
+              const bodyText = await page.innerText('body').catch(() => '');
+              return bodyText.toLowerCase().includes(targetStr.toLowerCase());
+            }
+          });
+
+          if (!ok) {
+            return {
+              success: false,
+              error: `Visibility validation failed after ${VALIDATION_TIMEOUT_MS / 1000}s. Element/text matching "${targetStr}" never became visible.`
+            };
+          }
+          break;
+        }
+
+        // ------------------------------------------------------------------ //
+        // NOT_VISIBLE VALIDATION — waits up to 10s for element/text to hide  //
+        // ------------------------------------------------------------------ //
+        case 'not_visible': {
+          const targetStr = target || value || '';
+          if (!targetStr) {
+            return { success: false, error: 'Target for negative visibility validation was not provided.' };
+          }
+
+          const isCssSelector = targetStr.startsWith('#') || targetStr.startsWith('.') || targetStr.includes('[');
+
+          const { ok } = await this.waitUntil(async () => {
+            if (isCssSelector) {
+              const locator = page.locator(targetStr).first();
+              const visible = await locator.isVisible().catch(() => false);
+              return !visible;
+            } else {
+              const locator = page.getByText(targetStr).first();
+              const visible = await locator.isVisible().catch(() => false);
+              if (visible) return false;
+
+              const bodyText = await page.innerText('body').catch(() => '');
+              return !bodyText.toLowerCase().includes(targetStr.toLowerCase());
+            }
+          }, 10_000);
+
+          if (!ok) {
+            return {
+              success: false,
+              error: `Negative visibility validation failed. Element/text "${targetStr}" is still visible on the page.`
+            };
+          }
+          break;
+        }
+
+        // ------------------------------------------------------------------ //
+        // ENABLED STATE VALIDATION — waits up to 15s for element to enable  //
         // ------------------------------------------------------------------ //
         case 'enabled': {
           const selector =
@@ -136,24 +239,81 @@ export class Validator implements IValidator {
         }
 
         // ------------------------------------------------------------------ //
-        // MESSAGE VALIDATION — success/error banners scoped to visible       //
-        // alert/toast regions (not a blind full-body substring search).      //
+        // DISABLED STATE VALIDATION — waits up to 10s for element to disable//
+        // ------------------------------------------------------------------ //
+        case 'disabled': {
+          const selector =
+            target.startsWith('#') || target.startsWith('.') || target.includes('[')
+              ? target
+              : `button:has-text("${target}"), input[name="${target}"], #${target}`;
+
+          const locator = page.locator(selector).first();
+
+          const { ok } = await this.waitUntil(async () => {
+            const isDisabled = await locator.isDisabled().catch(() => false);
+            const isEnabled = await locator.isEnabled().catch(() => true);
+            return isDisabled || !isEnabled;
+          }, 10_000);
+
+          if (!ok) {
+            return {
+              success: false,
+              error: `Disabled state validation failed. Element "${target}" is enabled.`
+            };
+          }
+          break;
+        }
+
+        // ------------------------------------------------------------------ //
+        // MESSAGE VALIDATION — success/error banners, alerts, toasts,        //
+        // notifications or status messages on page.                          //
         // ------------------------------------------------------------------ //
         case 'success_msg':
         case 'error_msg': {
-          if (!value) {
-            return { success: false, error: 'Expected message text was not provided.' };
-          }
+          const needle = (value || '').trim().toLowerCase();
+          const isErrorMsg = type === 'error_msg';
 
-          const regions =
-            type === 'error_msg'
-              ? ['[role="alert"]', '.error', '.error-message', '.alert-danger', '.invalid-feedback', '.toast', '.notification', '.message']
-              : ['[role="status"]', '[role="alert"]', '.success', '.alert-success', '.flash.success', '.toast', '.notification', '.message'];
+          const regions = isErrorMsg
+            ? [
+                '[role="alert"]',
+                '.error',
+                '.error-message',
+                '.error-msg',
+                '.alert-danger',
+                '.alert-error',
+                '.invalid-feedback',
+                '.toast',
+                '.notification',
+                '.message',
+                '.snackbar',
+                '.banner',
+                '[data-testid*="error"]',
+                '[id*="error"]',
+                '[class*="error"]',
+                '[class*="alert"]',
+                '[class*="toast"]',
+                '[class*="notification"]',
+              ]
+            : [
+                '[role="status"]',
+                '[role="alert"]',
+                '.success',
+                '.alert-success',
+                '.flash.success',
+                '.toast',
+                '.notification',
+                '.message',
+                '.snackbar',
+                '.banner',
+                '[data-testid*="success"]',
+                '[id*="success"]',
+                '[class*="success"]',
+              ];
 
-          const needle = value.toLowerCase();
           let lastRegionText = '';
 
           const { ok } = await this.waitUntil(async () => {
+            // 1. Check known alert/error/success elements first
             for (const sel of regions) {
               const loc = page.locator(sel);
               const count = await loc.count().catch(() => 0);
@@ -162,19 +322,50 @@ export class Validator implements IValidator {
                 if (!(await el.isVisible().catch(() => false))) continue;
                 const txt = (await el.innerText().catch(() => '')).trim();
                 if (txt) lastRegionText = txt;
-                if (txt.toLowerCase().includes(needle)) return true;
+
+                if (!needle) {
+                  // No specific text payload requested (e.g. "verify error message")
+                  // Any visible non-empty error/status region is a match!
+                  return true;
+                } else if (txt.toLowerCase().includes(needle)) {
+                  return true;
+                }
               }
             }
+
+            // 2. Fallback if specific text needle was provided: check if it appears in body text
+            if (needle) {
+              const bodyText = await page.innerText('body').catch(() => '');
+              if (bodyText.toLowerCase().includes(needle)) return true;
+            } else if (isErrorMsg) {
+              // 3. Fallback: check if body contains common error keywords
+              const bodyText = (await page.innerText('body').catch(() => '')).toLowerCase();
+              const commonErrorKeywords = [
+                'invalid',
+                'incorrect',
+                'failed',
+                'unauthorized',
+                'wrong',
+                'denied',
+                'error',
+                'unable to',
+              ];
+              for (const kw of commonErrorKeywords) {
+                if (bodyText.includes(kw)) return true;
+              }
+            }
+
             return false;
           });
 
           if (!ok) {
             const detail = lastRegionText
-              ? `Closest visible ${type === 'error_msg' ? 'error' : 'status'} region said: "${lastRegionText.substring(0, 200)}".`
-              : `No visible ${type === 'error_msg' ? 'error' : 'success'} message region was found on the page.`;
+              ? `Closest visible ${isErrorMsg ? 'error' : 'status'} region said: "${lastRegionText.substring(0, 200)}".`
+              : `No visible ${isErrorMsg ? 'error' : 'success'} message region was found on the page.`;
+            const expectedDesc = value ? `containing "${value}"` : 'on the page';
             return {
               success: false,
-              error: `${type === 'error_msg' ? 'Error' : 'Success'} message validation failed after ${VALIDATION_TIMEOUT_MS / 1000}s. Expected a visible message containing "${value}". ${detail}`,
+              error: `${isErrorMsg ? 'Error' : 'Success'} message validation failed after ${VALIDATION_TIMEOUT_MS / 1000}s. Expected a visible ${isErrorMsg ? 'error' : 'success'} message ${expectedDesc}. ${detail}`,
             };
           }
           break;
@@ -206,6 +397,30 @@ export class Validator implements IValidator {
             return {
               success: false,
               error: `Text validation failed after ${VALIDATION_TIMEOUT_MS / 1000}s. Expected page to contain "${value}". Last page content preview: "${lastBodyText.substring(0, 200)}..."`
+            };
+          }
+          break;
+        }
+
+        // ------------------------------------------------------------------ //
+        // NOT_TEXT VALIDATION — verifies visible page text does NOT contain  //
+        // ------------------------------------------------------------------ //
+        case 'not_text': {
+          if (!value) {
+            return { success: false, error: 'Expected text value for negative assertion was not provided.' };
+          }
+
+          let lastBodyText = '';
+
+          const { ok } = await this.waitUntil(async () => {
+            lastBodyText = await page.innerText('body').catch(() => '');
+            return !lastBodyText.toLowerCase().includes(value.toLowerCase());
+          }, 5_000);
+
+          if (!ok) {
+            return {
+              success: false,
+              error: `Negative text validation failed. Page still contains unwanted text "${value}".`
             };
           }
           break;

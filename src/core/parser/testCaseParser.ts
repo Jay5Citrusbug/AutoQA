@@ -15,13 +15,14 @@ export class TestCaseParser implements ITestCaseParser {
   }
 
   /**
-   * Normalizes the target field name by stripping common descriptive nouns and trailing punctuation
+   * Normalizes the target field name by stripping common descriptive nouns, trailing arrows, and punctuation
    */
   private cleanTargetField(field: string): string {
     return field
       .trim()
-      .replace(/[.,;!?:"']/g, '')
-      .replace(/\s+(?:field|input|box|textbox|button|link|area|dropdown|selector)$/i, '')
+      .replace(/\s*(?:->|-->|=>|>|→|➔)\s*$/g, '')
+      .replace(/[.,;!?:="']/g, '')
+      .replace(/\s+(?:field|input|box|textbox|button|btn|link|area|dropdown|selector|icon)$/i, '')
       .trim();
   }
 
@@ -226,48 +227,50 @@ export class TestCaseParser implements ITestCaseParser {
       }
 
       // 10. VERIFY SUCCESS MESSAGE
-      match = cleanText.match(/^(?:verify|assert|check)\s+success\s+(?:message|banner|notification|text)\s+["']?([^"']+)["']?/i);
-      if (match) {
+      match = cleanText.match(/^(?:verify|assert|check)\s+(?:that\s+)?(?:a\s+|an\s+)?success(?:\s+(?:message|banner|notification|text|alert))?(?:\s+(?:is\s+visible|exists|appears|displayed))?(?:\s+["']?([^"']+)["']?)?/i);
+      if (match && (cleanText.toLowerCase().includes('success') || match[1])) {
         parsedSteps.push({
           stepIndex,
           rawText: trimmed,
           type: 'validation',
           validation: 'success_msg',
           targetField: 'success_message',
-          value: match[1],
+          value: match[1] ? match[1].trim() : undefined,
         });
         return;
       }
 
-      // 11. VERIFY ERROR MESSAGE
-      match = cleanText.match(/^(?:verify|assert|check)\s+error\s+(?:message|banner|notification|text)\s+["']?([^"']+)["']?/i);
-      if (match) {
+      // 11. VERIFY ERROR MESSAGE / ERROR ALERT
+      match = cleanText.match(/^(?:verify|assert|check)\s+(?:that\s+)?(?:an?\s+)?error(?:\s+(?:message|banner|notification|text|alert))?(?:\s+(?:is\s+visible|exists|appears|displayed))?(?:\s+["']?([^"']+)["']?)?/i);
+      if (match && (cleanText.toLowerCase().includes('error') || match[1])) {
         parsedSteps.push({
           stepIndex,
           rawText: trimmed,
           type: 'validation',
           validation: 'error_msg',
           targetField: 'error_message',
-          value: match[1],
+          value: match[1] ? match[1].trim() : undefined,
         });
         return;
       }
 
-      // 12. VERIFY ELEMENT ENABLED
-      match = cleanText.match(/^(?:verify|assert|check)\s+["']?([^"']+)["']?\s+is\s+enabled/i);
+      // 12. VERIFY ELEMENT ENABLED / DISABLED
+      match = cleanText.match(/^(?:verify|assert|check)\s+(?:that\s+)?(?:the\s+)?(?:button|field|input|link|element)?\s*["']?([^"']+)["']?\s+is\s+(enabled|disabled)/i);
       if (match) {
+        const isDis = match[2].toLowerCase() === 'disabled';
         parsedSteps.push({
           stepIndex,
           rawText: trimmed,
           type: 'validation',
-          validation: 'enabled',
+          validation: isDis ? 'disabled' : 'enabled',
           targetField: match[1].trim(),
+          value: match[1].trim(),
         });
         return;
       }
 
-      // 13. VERIFY TEXT VISIBLE / VISIBILITY
-      match = cleanText.match(/^(?:verify|assert|check)\s+(?:text|element)?\s*["']?([^"']+)["']?\s+is\s+visible/i);
+      // 13. VERIFY TEXT / ELEMENT / WORD / BUTTON / FIELD / LABEL / LINK VISIBLE / VISIBILITY
+      match = cleanText.match(/^(?:verify|assert|check)\s+(?:that\s+)?(?:the\s+)?(?:text|word|content|element|button|field|input|label|link|heading|header|icon)?\s*["']?([^"']+)["']?\s+is\s+visible/i);
       if (match) {
         parsedSteps.push({
           stepIndex,
@@ -279,6 +282,203 @@ export class TestCaseParser implements ITestCaseParser {
         });
         return;
       }
+
+      // ── NEW ASSERTION RULES ────────────────────────────────────────────── //
+
+      // 14-A. URL SHOULD CONTAIN / URL SHOULD MATCH
+      //   "url should contain /dashboard"
+      //   "page url should contain /home"
+      //   "url should match https://..."
+      match = cleanText.match(/^(?:(?:page\s+)?url|the\s+url)\s+should(?:\s+(?:now|also))?\s+(?:contain|include|match|be)\s+["']?([^"']+)["']?/i);
+      if (match) {
+        parsedSteps.push({
+          stepIndex,
+          rawText: trimmed,
+          type: 'validation',
+          validation: 'url',
+          targetField: 'url',
+          value: match[1].trim(),
+        });
+        return;
+      }
+
+      // 14-B. URL SHOULD NOT CONTAIN
+      //   "url should not contain /login"
+      //   "verify url does not contain /error"
+      //   "url should not include /logout"
+      match = cleanText.match(
+        /^(?:(?:(?:page\s+)?url|the\s+url)\s+should\s+not\s+(?:contain|include|match|be)|(?:verify|assert|check)\s+(?:that\s+)?url\s+(?:does\s+not|doesn[''']?t|not)\s+(?:contain|include|match))\s+["']?([^"']+)["']?/i
+      );
+      if (match) {
+        parsedSteps.push({
+          stepIndex,
+          rawText: trimmed,
+          type: 'validation',
+          validation: 'not_url',
+          targetField: 'url',
+          value: match[1].trim(),
+        });
+        return;
+      }
+
+      // 14-C. ELEMENT/TEXT SHOULD BE VISIBLE / SHOULD APPEAR / SHOULD DISPLAY
+      //   '"Welcome" should be visible'
+      //   'the error banner should appear'
+      //   '"Dashboard" should be displayed'
+      match = cleanText.match(/^["']?([^"']+)["']?\s+should(?:\s+(?:now|also))?\s+(?:be\s+(?:visible|displayed|shown)|appear|show(?:\s+up)?)/i);
+      if (match) {
+        parsedSteps.push({
+          stepIndex,
+          rawText: trimmed,
+          type: 'validation',
+          validation: 'visible',
+          targetField: match[1].trim(),
+          value: match[1].trim(),
+        });
+        return;
+      }
+
+      // 14-D. ELEMENT/TEXT SHOULD NOT BE VISIBLE / SHOULD BE HIDDEN
+      //   '"Login form" should not be visible'
+      //   '"Error panel" should be hidden'
+      //   '"Spinner" should not appear'
+      match = cleanText.match(/^["']?([^"']+)["']?\s+should(?:\s+(?:now|also))?\s+(?:not\s+be\s+(?:visible|displayed|shown)|be\s+(?:hidden|invisible)|not\s+appear|disappear)/i);
+      if (match) {
+        parsedSteps.push({
+          stepIndex,
+          rawText: trimmed,
+          type: 'validation',
+          validation: 'not_visible',
+          targetField: match[1].trim(),
+          value: match[1].trim(),
+        });
+        return;
+      }
+
+      // 14-E. VERIFY ELEMENT IS HIDDEN / NOT VISIBLE
+      //   'verify "spinner" is hidden'
+      //   'assert element "modal" is not visible'
+      //   'check that "overlay" is not displayed'
+      match = cleanText.match(/^(?:verify|assert|check)\s+(?:that\s+)?(?:element\s+)?["']?([^"']+)["']?\s+is\s+(?:not\s+visible|not\s+displayed?|hidden|invisible)/i);
+      if (match) {
+        parsedSteps.push({
+          stepIndex,
+          rawText: trimmed,
+          type: 'validation',
+          validation: 'not_visible',
+          targetField: match[1].trim(),
+          value: match[1].trim(),
+        });
+        return;
+      }
+
+      // 14-F. VERIFY ELEMENT IS DISABLED / SHOULD BE DISABLED
+      //   'verify "submit" is disabled'
+      //   '"submit button" should be disabled'
+      //   'assert element "email field" is not enabled'
+      match = cleanText.match(
+        /^(?:(?:verify|assert|check)\s+(?:that\s+)?(?:element\s+)?["']?([^"']+)["']?\s+is\s+(?:disabled|not\s+enabled)|["']?([^"']+)["']?\s+should(?:\s+be)?\s+(?:disabled|not\s+enabled))/i
+      );
+      if (match) {
+        const target = (match[1] || match[2]).trim();
+        parsedSteps.push({
+          stepIndex,
+          rawText: trimmed,
+          type: 'validation',
+          validation: 'disabled',
+          targetField: target,
+          value: target,
+        });
+        return;
+      }
+
+      // 14-G. ELEMENT SHOULD BE ENABLED
+      //   '"submit" should be enabled'
+      //   '"Login button" should be enabled'
+      match = cleanText.match(/^["']?([^"']+)["']?\s+should(?:\s+be)?\s+enabled/i);
+      if (match) {
+        parsedSteps.push({
+          stepIndex,
+          rawText: trimmed,
+          type: 'validation',
+          validation: 'enabled',
+          targetField: match[1].trim(),
+          value: match[1].trim(),
+        });
+        return;
+      }
+
+      // 14-H. PAGE SHOULD CONTAIN / SHOULD DISPLAY / SHOULD SHOW text
+      //   'page should contain "Welcome"'
+      //   'should display "Success"'
+      //   'page should show "error"'
+      //   'should see "Dashboard"'
+      match = cleanText.match(
+        /^(?:(?:the\s+)?page\s+should\s+(?:contain|display|show|have|include)|should\s+(?:display|show|contain|include|have|see))\s+["']?([^"']+)["']?/i
+      );
+      if (match) {
+        parsedSteps.push({
+          stepIndex,
+          rawText: trimmed,
+          type: 'validation',
+          validation: 'text',
+          targetField: 'body',
+          value: match[1].trim(),
+        });
+        return;
+      }
+
+      // 14-I. PAGE SHOULD NOT CONTAIN / NOT DISPLAY / NOT SHOW text
+      //   'page should not contain "error"'
+      //   'should not display "Login"'
+      //   'page should not show "spinner"'
+      match = cleanText.match(
+        /^(?:(?:the\s+)?page\s+should\s+not\s+(?:contain|display|show|have|include)|should\s+not\s+(?:display|show|contain|include|have|see))\s+["']?([^"']+)["']?/i
+      );
+      if (match) {
+        parsedSteps.push({
+          stepIndex,
+          rawText: trimmed,
+          type: 'validation',
+          validation: 'not_text',
+          targetField: 'body',
+          value: match[1].trim(),
+        });
+        return;
+      }
+
+      // 14-J. SHOULD SEE / I SHOULD SEE text (BDD Gherkin style)
+      //   'I should see "Welcome back"'
+      //   'should see the dashboard'
+      match = cleanText.match(/^(?:i\s+)?should\s+see\s+["']?([^"']+)["']?/i);
+      if (match) {
+        parsedSteps.push({
+          stepIndex,
+          rawText: trimmed,
+          type: 'validation',
+          validation: 'text',
+          targetField: 'body',
+          value: match[1].trim(),
+        });
+        return;
+      }
+
+      // 14-K. SHOULD NOT SEE / I SHOULD NOT SEE text (BDD style)
+      //   'I should not see "error"'
+      //   'should not see the login form'
+      match = cleanText.match(/^(?:i\s+)?should\s+not\s+see\s+["']?([^"']+)["']?/i);
+      if (match) {
+        parsedSteps.push({
+          stepIndex,
+          rawText: trimmed,
+          type: 'validation',
+          validation: 'not_text',
+          targetField: 'body',
+          value: match[1].trim(),
+        });
+        return;
+      }
+
 
       // 14. ROBUST "EXPECTED RESULT" & "SHOULD" ASSERTIONS
       if (cleanText.toLowerCase().includes('verify') || 

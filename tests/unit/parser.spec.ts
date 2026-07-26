@@ -63,10 +63,71 @@ test.describe('TestCaseParser — clicks & assertions', () => {
     expect(s.value).toContain('You logged into a secure area');
   });
 
+  test('verify error message without explicit payload', () => {
+    const s = parseOne('verify error message');
+    expect(s.type).toBe('validation');
+    expect(s.validation).toBe('error_msg');
+    expect(s.value).toBeUndefined();
+  });
+
+  test('verify error message with explicit text', () => {
+    const s = parseOne('verify error message "Invalid email or password"');
+    expect(s.type).toBe('validation');
+    expect(s.validation).toBe('error_msg');
+    expect(s.value).toBe('Invalid email or password');
+  });
+
   test('verify url contains', () => {
     const s = parseOne('Verify url contains /secure');
     expect(s.type).toBe('validation');
     expect(s.validation).toBe('url');
+  });
+
+  test('url should contain', () => {
+    const s = parseOne('url should contain /dashboard');
+    expect(s.type).toBe('validation');
+    expect(s.validation).toBe('url');
+    expect(s.value).toBe('/dashboard');
+  });
+
+  test('url should not contain', () => {
+    const s = parseOne('url should not contain /login');
+    expect(s.type).toBe('validation');
+    expect(s.validation).toBe('not_url');
+    expect(s.value).toBe('/login');
+  });
+
+  test('should be visible', () => {
+    const s = parseOne('"Welcome back" should be visible');
+    expect(s.type).toBe('validation');
+    expect(s.validation).toBe('visible');
+    expect(s.value).toBe('Welcome back');
+  });
+
+  test('should be hidden / not visible', () => {
+    const s = parseOne('"Spinner" should be hidden');
+    expect(s.type).toBe('validation');
+    expect(s.validation).toBe('not_visible');
+    expect(s.value).toBe('Spinner');
+  });
+
+  test('should be disabled', () => {
+    const s = parseOne('"Submit button" should be disabled');
+    expect(s.type).toBe('validation');
+    expect(s.validation).toBe('disabled');
+    expect(s.targetField).toBe('Submit button');
+  });
+
+  test('should see / should not see BDD style', () => {
+    const s1 = parseOne('I should see "Dashboard"');
+    expect(s1.type).toBe('validation');
+    expect(s1.validation).toBe('text');
+    expect(s1.value).toBe('Dashboard');
+
+    const s2 = parseOne('should not see "Error message"');
+    expect(s2.type).toBe('validation');
+    expect(s2.validation).toBe('not_text');
+    expect(s2.value).toBe('Error message');
   });
 });
 

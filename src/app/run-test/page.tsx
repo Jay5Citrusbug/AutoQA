@@ -9,6 +9,8 @@ import {
   Monitor, Smartphone, Tablet, Globe, Zap, Users
 } from 'lucide-react';
 import { ExecutionType, StageStatus, ExecutionStage, StepExecution, BrowserEngine, DeviceMode } from '@/types/mvp';
+import { ImportFileModal } from '@/components/ImportFileModal';
+import { ImportedTestCase } from '@/utils/fileImportParser';
 
 export default function RunTestPage() {
   // --- FORM STATES ---
@@ -36,6 +38,40 @@ export default function RunTestPage() {
   // --- RUNTIME STATE ---
   const [runStatus, setRunStatus] = useState<'form' | 'executing' | 'results'>('form');
   const [activeStageId, setActiveStageId] = useState<string>('4');
+
+  // --- IMPORT FILE MODAL ---
+  const [isImportModalOpen, setIsImportModalOpen] = useState(false);
+
+  const handleImportFromFile = (params: {
+    stepsText: string;
+    url: string;
+    appName: string;
+    moduleName: string;
+    execType: ExecutionType;
+    testCases: ImportedTestCase[];
+  }) => {
+    // Populate form fields so they're visible if user comes back
+    setStepsText(params.stepsText);
+    setUrl(params.url);
+    setAppName(params.appName);
+    setModuleName(params.moduleName);
+    setExecType(params.execType);
+    setTestTitle(`Imported Suite (${params.testCases.length} TCs)`);
+    setTestDescription(
+      params.testCases
+        .map(tc => `${tc.tcId}: ${tc.title}`)
+        .join(' → ')
+    );
+    setExpectedResult('');
+    // Start execution immediately, passing values directly to avoid async state issues
+    handleStartExecution({
+      url: params.url,
+      stepsText: params.stepsText,
+      appName: params.appName,
+      moduleName: params.moduleName,
+      execType: params.execType,
+    });
+  };
   
   // High-fidelity Pipeline checklist stages
   const [stages, setStages] = useState<ExecutionStage[]>([
@@ -303,13 +339,26 @@ ${logs}
     }
   };
 
-  const handleStartExecution = async () => {
+  const handleStartExecution = async (overrides?: {
+    url?: string;
+    stepsText?: string;
+    appName?: string;
+    moduleName?: string;
+    execType?: ExecutionType;
+  }) => {
     setRunStatus('executing');
     setSelectedFailedStep(null);
     setApiError(null);
 
     const clientRunId = 'run_' + Date.now() + '_' + Math.random().toString(36).substring(2, 9);
     setRunId(clientRunId);
+
+    // Resolve values: prefer explicit overrides (from import), then state values
+    const resolvedUrl = overrides?.url ?? url;
+    const resolvedStepsText = overrides?.stepsText ?? stepsText;
+    const resolvedAppName = overrides?.appName ?? appName;
+    const resolvedModuleName = overrides?.moduleName ?? moduleName;
+    const resolvedExecType = overrides?.execType ?? execType;
 
     setLiveLogs([
       `[${new Date().toLocaleTimeString()}] Submitting run ${clientRunId} to server...`,
@@ -361,13 +410,13 @@ ${logs}
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           runId: clientRunId,
-          url,
-          appName: appName.trim() || testTitle.trim() || 'AutoQA Target',
-          moduleName: moduleName.trim() || 'Default Flow',
-          execType,
+          url: resolvedUrl,
+          appName: resolvedAppName.trim() || testTitle.trim() || 'AutoQA Target',
+          moduleName: resolvedModuleName.trim() || 'Default Flow',
+          execType: resolvedExecType,
           // Only send pure steps + expected result — title & description are UI-only metadata
           stepsText: [
-            stepsText.trim(),
+            resolvedStepsText.trim(),
             expectedResult.trim() ? expectedResult.trim() : '',
           ].filter(Boolean).join('\n'),
           browser,
@@ -466,6 +515,13 @@ ${logs}
 
   return (
     <div className="flex flex-col gap-6 w-full text-[#f9fafb]">
+
+      {/* Import File Modal */}
+      <ImportFileModal
+        isOpen={isImportModalOpen}
+        onClose={() => setIsImportModalOpen(false)}
+        onImport={handleImportFromFile}
+      />
       
       {/* 1. SETUP STATE PANEL (Image 1 Layout) */}
       {runStatus === 'form' && (
@@ -558,7 +614,11 @@ ${logs}
                 </div>
 
                 <div className="flex items-center gap-3">
-                  <button className="text-sm sm:text-base font-bold text-zinc-400 hover:text-white border border-zinc-800 bg-[#090d16] px-4 py-2.5 rounded-xl flex items-center gap-1.5 transition-all">
+                  <button
+                    type="button"
+                    onClick={() => setIsImportModalOpen(true)}
+                    className="text-sm sm:text-base font-bold text-blue-400 hover:text-blue-300 border border-blue-500/30 bg-blue-500/5 hover:bg-blue-500/10 px-4 py-2.5 rounded-xl flex items-center gap-1.5 transition-all"
+                  >
                     <Upload className="h-4.5 w-4.5" />
                     Import File
                   </button>
@@ -671,17 +731,48 @@ ${logs}
                 {/* FIELD 4: Expected Result */}
                 <div className="flex gap-0 group">
                   <div className="w-1.5 bg-amber-500/40 group-focus-within:bg-amber-500 transition-colors shrink-0 rounded-bl-2xl" />
-                  <div className="flex-1 px-5 py-4 flex flex-col gap-1.5">
-                    <label className="text-[10px] sm:text-xs font-bold uppercase tracking-widest text-amber-400 flex items-center gap-1.5">
-                      <span className="h-4 w-4 rounded bg-amber-500/15 border border-amber-500/30 text-amber-400 flex items-center justify-center text-[9px] font-black">4</span>
-                      Expected Result
-                      <span className="text-zinc-600 font-normal normal-case tracking-normal ml-1">— assertion / verification to run at the end</span>
-                    </label>
+                  <div className="flex-1 px-5 py-4 flex flex-col gap-2">
+                    <div className="flex items-center justify-between flex-wrap gap-2">
+                      <label className="text-[10px] sm:text-xs font-bold uppercase tracking-widest text-amber-400 flex items-center gap-1.5">
+                        <span className="h-4 w-4 rounded bg-amber-500/15 border border-amber-500/30 text-amber-400 flex items-center justify-center text-[9px] font-black">4</span>
+                        Expected Result
+                        <span className="text-zinc-600 font-normal normal-case tracking-normal ml-1">— assertions to verify at the end</span>
+                      </label>
+                    </div>
+
+                    {/* Assertion helper chips */}
+                    <div className="flex flex-wrap gap-1.5 items-center">
+                      <span className="text-[10px] font-bold uppercase tracking-wider text-zinc-500 mr-1">Quick Add:</span>
+                      {[
+                        { label: '+ URL Contains', template: 'verify url contains "/dashboard"' },
+                        { label: '+ URL Not Contains', template: 'url should not contain "/login"' },
+                        { label: '+ Text / Word Visible', template: 'verify text "Welcome" is visible' },
+                        { label: '+ Button Visible', template: 'verify button "Logout" is visible' },
+                        { label: '+ Field Visible', template: 'verify field "Search" is visible' },
+                        { label: '+ Hidden', template: '"Loading spinner" should be hidden' },
+                        { label: '+ Enabled', template: '"Submit button" should be enabled' },
+                        { label: '+ Disabled', template: '"Save button" should be disabled' },
+                        { label: '+ Error Msg', template: 'verify error message "Invalid credentials"' },
+                        { label: '+ Success Msg', template: 'verify success message' },
+                      ].map((chip, idx) => (
+                        <button
+                          key={idx}
+                          type="button"
+                          onClick={() => {
+                            setExpectedResult(prev => (prev ? `${prev.trim()}\n${chip.template}` : chip.template));
+                          }}
+                          className="text-[10px] font-mono font-semibold px-2 py-0.5 rounded-lg border border-amber-500/20 bg-amber-500/5 hover:bg-amber-500/15 text-amber-300 transition-all cursor-pointer select-none"
+                        >
+                          {chip.label}
+                        </button>
+                      ))}
+                    </div>
+
                     <textarea
                       value={expectedResult}
                       onChange={e => setExpectedResult(e.target.value)}
-                      placeholder={`Verify success message "Welcome to the dashboard" exists\nVerify URL contains "/dashboard"\nVerify element "Logout button" is visible`}
-                      rows={3}
+                      placeholder={`Examples of strong assertions you can write:\n• verify url contains "/desktop/home"\n• verify text "Welcome" is visible\n• verify button "Logout" is visible\n• verify field "Password" is enabled\n• "Loading spinner" should be hidden\n• verify error message "Invalid email or password"`}
+                      rows={4}
                       className="bg-transparent text-sm sm:text-base font-mono text-amber-100/80 placeholder-zinc-600 focus:outline-none resize-none leading-relaxed w-full"
                     />
                   </div>
@@ -873,7 +964,7 @@ ${logs}
               </button>
               <button
                 type="button"
-                onClick={handleStartExecution}
+                onClick={() => handleStartExecution()}
                 className="px-8 py-4 rounded-xl font-bold bg-[#3b82f6] text-white hover:bg-blue-500 hover:shadow-lg hover:shadow-blue-500/20 active:scale-[0.99] border border-blue-400/20 flex items-center gap-2 select-none cursor-pointer transition-all text-base sm:text-lg"
               >
                 <Play className="h-5 w-5 fill-current" />

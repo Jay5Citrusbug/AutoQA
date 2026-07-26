@@ -513,19 +513,31 @@ export class PlaywrightRunner implements IPlaywrightRunner {
                 await page.locator(match.selector).first().click({ timeout: 15_000 });
                 stepLogs.push(`Clicked element`);
 
-                // Post-click: wait for page/DOM load (with a short timeout)
-                stepLogs.push(`Waiting for page/DOM load...`);
+                // Post-click: wait for page/DOM load.
+                // For traditional server-side apps this catches the full page load.
+                // For SPAs (client-side routing via pushState), we extend the wait
+                // and also try networkidle so post-login redirects settle before the
+                // next step (e.g. URL assertion) runs.
+                stepLogs.push(`Waiting for page to settle after click...`);
                 try {
-                  await page.waitForLoadState('load', { timeout: 3000 });
-                  stepLogs.push(`Page settled.`);
+                  // Allow up to 10s for a full load (handles server-side redirects + slow SPAs)
+                  await page.waitForLoadState('load', { timeout: 10_000 });
+                  stepLogs.push(`Page load complete.`);
                 } catch {
-                  try {
-                    await page.waitForLoadState('domcontentloaded', { timeout: 1000 });
-                    stepLogs.push(`Page DOM ready.`);
-                  } catch {
-                    stepLogs.push(`Continuing execution.`);
-                  }
+                  stepLogs.push(`Load event timed out — continuing (SPA navigation expected).`);
                 }
+
+                // Additional settle for SPA client-side routing:
+                // pushState URL changes happen after 'load' fires, so we give the
+                // network an extra 5s to go quiet.
+                try {
+                  await page.waitForLoadState('networkidle', { timeout: 5_000 });
+                  stepLogs.push(`Network settled.`);
+                } catch {
+                  // networkidle is optional — safe to continue
+                }
+
+                stepLogs.push(`Post-click URL: ${page.url()}`);
                 break;
               }
 

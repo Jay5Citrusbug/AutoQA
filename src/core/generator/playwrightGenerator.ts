@@ -183,9 +183,13 @@ export class PlaywrightGenerator implements IPlaywrightGenerator {
       } else if (step.type === 'validation') {
         switch (step.validation) {
           case 'url': {
-            // Use string-based URL check to avoid invalid regex with slashes
             const escapedVal = (step.value ?? '').replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
             codeLines.push(`    await expect(page).toHaveURL(new RegExp(${JSON.stringify(escapedVal)}), { timeout: 120000 });`);
+            break;
+          }
+          case 'not_url': {
+            const escapedVal = (step.value ?? '').replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+            codeLines.push(`    await expect(page).not.toHaveURL(new RegExp(${JSON.stringify(escapedVal)}), { timeout: 120000 });`);
             break;
           }
           case 'visible':
@@ -195,6 +199,13 @@ export class PlaywrightGenerator implements IPlaywrightGenerator {
               codeLines.push(`    await expect(page.getByText(${this.valueExpr(step.value || step.targetField || '')}).first()).toBeVisible({ timeout: 120000 });`);
             }
             break;
+          case 'not_visible':
+            if (hasReliableSelector) {
+              codeLines.push(`    await expect(${loc}).not.toBeVisible({ timeout: 120000 });`);
+            } else {
+              codeLines.push(`    await expect(page.getByText(${this.valueExpr(step.value || step.targetField || '')}).first()).not.toBeVisible({ timeout: 120000 });`);
+            }
+            break;
           case 'enabled':
             if (hasReliableSelector) {
               codeLines.push(`    await expect(${loc}).toBeEnabled({ timeout: 120000 });`);
@@ -202,10 +213,29 @@ export class PlaywrightGenerator implements IPlaywrightGenerator {
               codeLines.push(`    // TODO: no reliable locator resolved to assert enabled: "${step.targetField}"`);
             }
             break;
-          case 'success_msg':
-          case 'error_msg':
+          case 'disabled':
+            if (hasReliableSelector) {
+              codeLines.push(`    await expect(${loc}).toBeDisabled({ timeout: 120000 });`);
+            } else {
+              codeLines.push(`    // TODO: no reliable locator resolved to assert disabled: "${step.targetField}"`);
+            }
+            break;
           case 'text':
             codeLines.push(`    await expect(page.locator('body')).toContainText(${this.valueExpr(step.value || '')}, { timeout: 120000 });`);
+            break;
+          case 'not_text':
+            codeLines.push(`    await expect(page.locator('body')).not.toContainText(${this.valueExpr(step.value || '')}, { timeout: 120000 });`);
+            break;
+          case 'success_msg':
+          case 'error_msg':
+            if (step.value) {
+              codeLines.push(`    await expect(page.locator('body')).toContainText(${this.valueExpr(step.value)}, { timeout: 120000 });`);
+            } else {
+              const selList = step.validation === 'error_msg'
+                ? '[role="alert"], .error, .error-message, .error-msg, .alert-danger, .invalid-feedback, .toast, .notification, [class*="error"], [class*="alert"]'
+                : '[role="status"], [role="alert"], .success, .alert-success, .toast, .notification, [class*="success"]';
+              codeLines.push(`    await expect(page.locator(${JSON.stringify(selList)}).first()).toBeVisible({ timeout: 120000 });`);
+            }
             break;
           default:
             codeLines.push(`    // Unsupported validation: ${step.validation}`);
