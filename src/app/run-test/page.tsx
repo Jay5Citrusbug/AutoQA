@@ -141,6 +141,33 @@ export default function RunTestPage() {
   const [bugReportContent, setBugReportContent] = useState('');
   const [bugCopied, setBugCopied] = useState(false);
 
+  // --- SAVE TO REGRESSION SUITE (reuse this run's test case in future regression batches) ---
+  const [regressionSaveState, setRegressionSaveState] = useState<'idle' | 'saving' | 'saved' | 'error'>('idle');
+
+  const handleSaveToRegressionSuite = async () => {
+    setRegressionSaveState('saving');
+    try {
+      const res = await fetch('/api/test-cases', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          title: testTitle.trim() || appName.trim() || 'Untitled Test Case',
+          description: testDescription.trim(),
+          websiteUrl: url.trim(),
+          moduleName: moduleName.trim() || 'General',
+          stepsText: stepsText.trim(),
+          expectedResult: expectedResult.trim(),
+          execType: 'Regression',
+          source: 'run',
+        }),
+      });
+      if (!res.ok) throw new Error('Save failed');
+      setRegressionSaveState('saved');
+    } catch {
+      setRegressionSaveState('error');
+    }
+  };
+
   const generateBugReport = () => {
     if (!selectedFailedStep) return;
 
@@ -193,8 +220,31 @@ ${logs}
     const params = new URLSearchParams(window.location.search);
     const runIdParam = params.get('runId');
     const testCaseIdParam = params.get('testCaseId');
+    const batchParam = params.get('batch');
 
-    if (runIdParam) {
+    if (batchParam) {
+      // Picks up a combined multi-TC payload staged by the Test Case Repository's
+      // "Run Selected as Batch" action — the same "TC01:\n...\n\nTC02:\n..." shape
+      // the CSV importer produces, just sourced from the saved regression bank.
+      const raw = sessionStorage.getItem('autoqa_batch_run');
+      sessionStorage.removeItem('autoqa_batch_run');
+      if (raw) {
+        try {
+          const batch = JSON.parse(raw) as {
+            stepsText: string; url: string; appName: string; moduleName: string; execType: ExecutionType;
+          };
+          setStepsText(batch.stepsText);
+          setUrl(batch.url);
+          setAppName(batch.appName);
+          setModuleName(batch.moduleName);
+          setExecType(batch.execType);
+          setTestTitle(batch.appName);
+          handleStartExecution(batch);
+        } catch {
+          setApiError('Failed to load the selected batch — please re-select and try again.');
+        }
+      }
+    } else if (runIdParam) {
       const loadHistoricalRun = async () => {
         try {
           setRunStatus('executing');
@@ -349,6 +399,7 @@ ${logs}
     setRunStatus('executing');
     setSelectedFailedStep(null);
     setApiError(null);
+    setRegressionSaveState('idle');
 
     const clientRunId = 'run_' + Date.now() + '_' + Math.random().toString(36).substring(2, 9);
     setRunId(clientRunId);
@@ -603,8 +654,11 @@ ${logs}
           {/* Core content split panel */}
           <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
             
-            {/* Left: Structured Test Case Editor */}
-            <div className="lg:col-span-2 border border-zinc-800 bg-[#101524] rounded-2xl flex flex-col">
+            {/* Left: Structured Test Case Editor.
+                self-start keeps the panel hugging its content — without it the grid
+                stretches it to match the taller settings column, leaving dead space
+                under the Expected Result field. */}
+            <div className="lg:col-span-2 self-start border border-zinc-800 bg-[#101524] rounded-2xl flex flex-col">
               
               {/* Editor Header */}
               <div className="px-6 py-5 border-b border-zinc-800 flex items-center justify-between gap-4 flex-wrap">
@@ -772,8 +826,7 @@ ${logs}
                       value={expectedResult}
                       onChange={e => setExpectedResult(e.target.value)}
                       placeholder={`Examples of strong assertions you can write:\n• verify url contains "/desktop/home"\n• verify text "Welcome" is visible\n• verify button "Logout" is visible\n• verify field "Password" is enabled\n• "Loading spinner" should be hidden\n• verify error message "Invalid email or password"`}
-                      rows={4}
-                      className="bg-transparent text-sm sm:text-base font-mono text-amber-100/80 placeholder-zinc-600 focus:outline-none resize-none leading-relaxed w-full"
+                      className="bg-transparent text-sm sm:text-base font-mono text-amber-100/80 placeholder-zinc-600 focus:outline-none resize-y leading-relaxed w-full min-h-[220px]"
                     />
                   </div>
                 </div>
@@ -945,19 +998,8 @@ ${logs}
 
           </div>
 
-          {/* Bottom stats summary bar */}
-          <div className="border border-zinc-800 bg-[#101524] rounded-2xl p-6 flex flex-col sm:flex-row items-center justify-between gap-5 mt-2">
-            <div className="flex gap-8 text-sm sm:text-base">
-              <div className="flex flex-col gap-1.5">
-                <span className="text-xs sm:text-sm font-bold text-zinc-500 uppercase tracking-widest">Estimated Time</span>
-                <span className="font-mono text-zinc-300 font-bold text-base sm:text-lg">~ 2m 45s</span>
-              </div>
-              <div className="flex flex-col gap-1.5">
-                <span className="text-xs sm:text-sm font-bold text-zinc-500 uppercase tracking-widest">Credits Required</span>
-                <span className="font-mono text-amber-500 font-extrabold text-base sm:text-lg">12.50</span>
-              </div>
-            </div>
-
+          {/* Bottom action bar */}
+          <div className="border border-zinc-800 bg-[#101524] rounded-2xl p-6 flex flex-col sm:flex-row items-center justify-end gap-5 mt-2">
             <div className="flex items-center gap-6">
               <button className="text-sm sm:text-base text-zinc-400 hover:text-white font-bold transition-all">
                 Save as Draft
@@ -1189,6 +1231,33 @@ ${logs}
                   Download Spec
                 </a>
               )}
+
+              <button
+                type="button"
+                onClick={handleSaveToRegressionSuite}
+                disabled={regressionSaveState === 'saving' || regressionSaveState === 'saved'}
+                className={`flex items-center gap-1.5 text-sm sm:text-base font-bold transition-all border px-4.5 py-2.5 rounded-xl cursor-pointer disabled:cursor-default ${
+                  regressionSaveState === 'saved'
+                    ? 'text-emerald-400 border-emerald-500/20 bg-emerald-500/10'
+                    : regressionSaveState === 'error'
+                      ? 'text-rose-400 border-rose-500/20 bg-rose-500/10 hover:bg-rose-500/20'
+                      : 'text-amber-300 border-amber-500/20 bg-amber-500/10 hover:bg-amber-500/20'
+                }`}
+                title="Save this test case for reuse in future regression runs"
+              >
+                {regressionSaveState === 'saved' ? (
+                  <CheckCircle className="h-4.5 w-4.5" />
+                ) : (
+                  <ClipboardList className="h-4.5 w-4.5" />
+                )}
+                {regressionSaveState === 'saving'
+                  ? 'Saving…'
+                  : regressionSaveState === 'saved'
+                    ? 'Saved to Regression Suite'
+                    : regressionSaveState === 'error'
+                      ? 'Save failed — retry?'
+                      : 'Save to Regression Suite'}
+              </button>
             </div>
           </div>
 
@@ -1259,9 +1328,9 @@ ${logs}
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-zinc-900/50 text-sm sm:text-base font-semibold text-zinc-300">
-                  {stepResults.map((r) => {
+                  {stepResults.map((r, idx) => {
                     return (
-                      <tr key={r.stepIndex} className="hover:bg-zinc-900/10 transition-colors">
+                      <tr key={`${idx}-${r.stepIndex}`} className="hover:bg-zinc-900/10 transition-colors">
                         <td className="px-6 py-4">
                           <span className={`inline-flex items-center gap-1.5 text-xs sm:text-sm font-bold ${
                             r.status === 'passed'

@@ -1,23 +1,28 @@
 'use client';
 
 import React, { useState, useEffect } from 'react';
-import { 
-  Layers, Plus, Edit2, Trash2, Play, Search, X, 
-  HelpCircle, RefreshCw, Globe, ChevronRight, Save, ClipboardList, Info
+import {
+  Layers, Plus, Edit2, Trash2, Play, Search, X,
+  HelpCircle, RefreshCw, Globe, ChevronRight, Save, ClipboardList, Info, PlayCircle
 } from 'lucide-react';
+import { useRouter } from 'next/navigation';
 import Link from 'next/link';
 import { TestCase } from '@/types/testCase';
 import SafeFormattedDate from '@/components/SafeFormattedDate';
 
+const EXEC_TYPE_FILTERS = ['All', 'Functional', 'Smoke', 'Regression'] as const;
+type ExecTypeFilter = typeof EXEC_TYPE_FILTERS[number];
+
 export default function TestCasesPage() {
+  const router = useRouter();
   const [testCases, setTestCases] = useState<TestCase[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [apiError, setApiError] = useState<string | null>(null);
-  
+
   // Form modal states
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [editingTestCase, setEditingTestCase] = useState<TestCase | null>(null);
-  
+
   // Form fields
   const [title, setTitle] = useState('');
   const [description, setDescription] = useState('');
@@ -28,6 +33,12 @@ export default function TestCasesPage() {
 
   // Search filter
   const [searchTerm, setSearchTerm] = useState('');
+  const [execTypeFilter, setExecTypeFilter] = useState<ExecTypeFilter>('All');
+
+  // Batch selection — pick multiple saved test cases and re-run them together,
+  // the same way a CSV import runs many TCs in one pass (this is how a saved
+  // regression bank gets reused instead of re-uploading a file every time).
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
 
   // Fetch test cases on mount
   const fetchTestCases = async () => {
@@ -141,10 +152,57 @@ export default function TestCasesPage() {
 
   // Filter test cases
   const filteredTestCases = testCases.filter((tc) => {
-    return tc.title.toLowerCase().includes(searchTerm.toLowerCase()) ||
+    const matchesSearch = tc.title.toLowerCase().includes(searchTerm.toLowerCase()) ||
            (tc.moduleName || '').toLowerCase().includes(searchTerm.toLowerCase()) ||
            (tc.websiteUrl || '').toLowerCase().includes(searchTerm.toLowerCase());
+    const matchesExecType = execTypeFilter === 'All' || (tc.execType || 'Functional') === execTypeFilter;
+    return matchesSearch && matchesExecType;
   });
+
+  const toggleSelected = (id: string) => {
+    setSelectedIds(prev => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id); else next.add(id);
+      return next;
+    });
+  };
+
+  const toggleSelectAllVisible = () => {
+    setSelectedIds(prev => {
+      const allVisibleSelected = filteredTestCases.length > 0 && filteredTestCases.every(tc => prev.has(tc.id));
+      if (allVisibleSelected) return new Set();
+      return new Set(filteredTestCases.map(tc => tc.id));
+    });
+  };
+
+  // Combines the selected saved test cases into one multi-TC stepsText blob
+  // (same "TC01: Title\n...steps..." format the CSV importer produces) and
+  // hands it to the Run Test page via sessionStorage, since the combined
+  // payload can be far larger than a URL query string can safely carry.
+  const handleRunSelectedAsBatch = () => {
+    const selected = testCases.filter(tc => selectedIds.has(tc.id));
+    if (selected.length === 0) return;
+
+    const stepsText = selected
+      .map((tc, idx) => {
+        const tcId = `TC${String(idx + 1).padStart(2, '0')}`;
+        const lines = [`${tcId}: ${tc.title}`, tc.stepsText.trim()];
+        if (tc.expectedResult?.trim()) lines.push(tc.expectedResult.trim());
+        return lines.join('\n');
+      })
+      .join('\n\n');
+
+    const first = selected[0];
+    sessionStorage.setItem('autoqa_batch_run', JSON.stringify({
+      stepsText,
+      url: first.websiteUrl || '',
+      appName: `Regression Batch (${selected.length} TCs)`,
+      moduleName: first.moduleName || 'Regression Suite',
+      execType: 'Regression',
+    }));
+
+    router.push('/run-test?batch=1');
+  };
 
   return (
     <div className="flex flex-col gap-8 w-full py-2 relative animate-fade-in text-[#f9fafb]">
@@ -170,18 +228,63 @@ export default function TestCasesPage() {
       </div>
 
       {/* Filter toolbar */}
-      <div className="relative max-w-xl w-full">
-        <div className="absolute inset-y-0 left-0 pl-4 flex items-center pointer-events-none text-zinc-500">
-          <Search className="h-4.5 w-4.5" />
+      <div className="flex flex-col sm:flex-row sm:items-center gap-4">
+        <div className="relative max-w-xl w-full">
+          <div className="absolute inset-y-0 left-0 pl-4 flex items-center pointer-events-none text-zinc-500">
+            <Search className="h-4.5 w-4.5" />
+          </div>
+          <input
+            type="text"
+            value={searchTerm}
+            onChange={e => setSearchTerm(e.target.value)}
+            placeholder="Search by title, module context, or url..."
+            className="w-full pl-11 pr-4 py-3.5 bg-zinc-900 border border-zinc-800 rounded-xl text-sm sm:text-base text-white placeholder-zinc-500 focus:outline-none focus:border-purple-500"
+          />
         </div>
-        <input
-          type="text"
-          value={searchTerm}
-          onChange={e => setSearchTerm(e.target.value)}
-          placeholder="Search by title, module context, or url..."
-          className="w-full pl-11 pr-4 py-3.5 bg-zinc-900 border border-zinc-800 rounded-xl text-sm sm:text-base text-white placeholder-zinc-500 focus:outline-none focus:border-purple-500"
-        />
+
+        <div className="flex items-center gap-1.5 bg-zinc-900/60 border border-zinc-800 rounded-xl p-1.5 shrink-0">
+          {EXEC_TYPE_FILTERS.map(f => (
+            <button
+              key={f}
+              type="button"
+              onClick={() => setExecTypeFilter(f)}
+              className={`px-3.5 py-2 rounded-lg text-xs sm:text-sm font-bold transition-all cursor-pointer ${
+                execTypeFilter === f
+                  ? 'bg-purple-600 text-white'
+                  : 'text-zinc-500 hover:text-zinc-300'
+              }`}
+            >
+              {f}
+            </button>
+          ))}
+        </div>
       </div>
+
+      {/* Batch selection toolbar — only shown once at least one TC is selected */}
+      {selectedIds.size > 0 && (
+        <div className="flex items-center justify-between gap-4 bg-purple-500/5 border border-purple-500/20 rounded-xl px-5 py-3.5">
+          <p className="text-sm sm:text-base font-bold text-white">
+            {selectedIds.size} test case{selectedIds.size !== 1 ? 's' : ''} selected
+          </p>
+          <div className="flex items-center gap-3">
+            <button
+              type="button"
+              onClick={() => setSelectedIds(new Set())}
+              className="text-xs sm:text-sm font-bold text-zinc-500 hover:text-zinc-300 transition-colors"
+            >
+              Clear selection
+            </button>
+            <button
+              type="button"
+              onClick={handleRunSelectedAsBatch}
+              className="flex items-center gap-2 px-5 py-2.5 rounded-xl bg-purple-600 hover:bg-purple-500 text-white font-bold text-sm transition-all shadow-lg shadow-purple-500/10"
+            >
+              <PlayCircle className="h-4.5 w-4.5" />
+              Run Selected as Batch
+            </button>
+          </div>
+        </div>
+      )}
 
       {/* Test Cases Table/Grid */}
       <div className="border border-zinc-800 rounded-2xl bg-zinc-900/10 backdrop-blur-md overflow-hidden">
@@ -189,7 +292,16 @@ export default function TestCasesPage() {
           <table className="w-full text-left border-collapse">
             <thead>
               <tr className="border-b border-zinc-800/60 bg-zinc-900/40 text-xs sm:text-sm font-bold text-zinc-500 uppercase tracking-widest">
+                <th className="px-6 py-4 w-12">
+                  <input
+                    type="checkbox"
+                    checked={filteredTestCases.length > 0 && filteredTestCases.every(tc => selectedIds.has(tc.id))}
+                    onChange={toggleSelectAllVisible}
+                    className="h-4 w-4 accent-purple-500 cursor-pointer"
+                  />
+                </th>
                 <th className="px-6 py-4">Test Case details</th>
+                <th className="px-6 py-4">Type</th>
                 <th className="px-6 py-4">Module context</th>
                 <th className="px-6 py-4">Steps count</th>
                 <th className="px-6 py-4">Last Updated</th>
@@ -199,7 +311,7 @@ export default function TestCasesPage() {
             <tbody className="divide-y divide-zinc-900/50 text-sm sm:text-base font-semibold text-zinc-300">
               {isLoading && (
                 <tr>
-                  <td colSpan={5} className="p-16 text-center text-zinc-500 font-semibold text-base">
+                  <td colSpan={7} className="p-16 text-center text-zinc-500 font-semibold text-base">
                     <div className="flex flex-col items-center justify-center gap-3">
                       <RefreshCw className="h-8 w-8 animate-spin text-purple-400" />
                       <p className="text-zinc-400 mt-2 font-mono">Loading repository catalog...</p>
@@ -210,7 +322,7 @@ export default function TestCasesPage() {
 
               {!isLoading && apiError && (
                 <tr>
-                  <td colSpan={5} className="p-16 text-center text-rose-455 font-semibold text-base">
+                  <td colSpan={7} className="p-16 text-center text-rose-455 font-semibold text-base">
                     <div className="flex flex-col items-center justify-center gap-2">
                       <p className="text-rose-500 font-bold font-mono">Failed to load test cases</p>
                       <p className="text-zinc-500 text-xs sm:text-sm mt-1 font-mono">{apiError}</p>
@@ -220,7 +332,15 @@ export default function TestCasesPage() {
               )}
 
               {!isLoading && !apiError && filteredTestCases.map((tc) => (
-                <tr key={tc.id} className="hover:bg-zinc-900/10 transition-colors">
+                <tr key={tc.id} className={`hover:bg-zinc-900/10 transition-colors ${selectedIds.has(tc.id) ? 'bg-purple-500/5' : ''}`}>
+                  <td className="px-6 py-4">
+                    <input
+                      type="checkbox"
+                      checked={selectedIds.has(tc.id)}
+                      onChange={() => toggleSelected(tc.id)}
+                      className="h-4 w-4 accent-purple-500 cursor-pointer"
+                    />
+                  </td>
                   <td className="px-6 py-4 flex items-start gap-3 max-w-sm">
                     <div className="h-10 w-10 rounded-lg bg-zinc-950 border border-zinc-855 flex items-center justify-center text-purple-400 shrink-0 mt-0.5">
                       <ClipboardList className="h-5.5 w-5.5" />
@@ -232,6 +352,15 @@ export default function TestCasesPage() {
                         {tc.websiteUrl || 'No target URL configured'}
                       </div>
                     </div>
+                  </td>
+                  <td className="px-6 py-4">
+                    <span className={`text-[10px] px-2 py-1 rounded font-bold uppercase tracking-wider ${
+                      tc.execType === 'Smoke' ? 'bg-amber-500/15 text-amber-400' :
+                      tc.execType === 'Regression' ? 'bg-purple-500/15 text-purple-400' :
+                      'bg-emerald-500/15 text-emerald-400'
+                    }`}>
+                      {tc.execType || 'Functional'}
+                    </span>
                   </td>
                   <td className="px-6 py-4 text-zinc-400 font-mono">{tc.moduleName}</td>
                   <td className="px-6 py-4 text-zinc-350 font-mono">{tc.steps.length} steps</td>
@@ -268,7 +397,7 @@ export default function TestCasesPage() {
 
               {!isLoading && !apiError && filteredTestCases.length === 0 && (
                 <tr>
-                  <td colSpan={5} className="p-16 text-center text-zinc-500 font-semibold text-base">
+                  <td colSpan={7} className="p-16 text-center text-zinc-500 font-semibold text-base">
                     No matching test cases found in your repository.
                   </td>
                 </tr>

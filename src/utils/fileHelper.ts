@@ -131,6 +131,23 @@ export const fileHelper = {
   },
 
   /**
+   * Saves multiple testcases in a single read/write pass — used when bulk-saving
+   * an imported CSV batch or a completed run's suites into the regression bank.
+   */
+  saveTestCases(testCases: TestCase[]) {
+    this.ensureDirectories();
+    const testCasesPath = path.join(PATHS.REPORTS, 'test-cases.json');
+    let existing = this.readJson<TestCase[]>(testCasesPath) || [];
+
+    const incomingIds = new Set(testCases.map(t => t.id));
+    existing = existing.filter(t => !incomingIds.has(t.id));
+    existing = [...testCases, ...existing];
+
+    this.writeJson(testCasesPath, existing);
+    logger.info(`Bulk-saved ${testCases.length} test case(s) to: ${testCasesPath}`);
+  },
+
+  /**
    * Retrieves all saved testcases
    */
   getTestCases(): TestCase[] {

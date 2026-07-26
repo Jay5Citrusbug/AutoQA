@@ -26,6 +26,7 @@ import path from 'path';
 import { fileHelper } from '@/utils/fileHelper';
 import { getCredentials, substituteVariables } from '@/utils/testData';
 import { runRegistry } from './runRegistry';
+import { installNetworkActivityTracker, waitForPageSettle, waitUntilCondition } from './smartWait';
 import type { Browser, BrowserContext, Page, Request } from '@playwright/test';
 
 // Universal 30-second timeout applied to all network-dependent operations.
@@ -348,6 +349,10 @@ export class PlaywrightRunner implements IPlaywrightRunner {
 
       page = await browserContext.newPage();
 
+      // Installs a fetch/XHR counter used by waitForPageSettle() to detect
+      // in-flight API calls (e.g. after a click triggers a CRUD request).
+      await installNetworkActivityTracker(page);
+
       // Listen to all network requests for waterfall diagram
       page.on('request', (req) => {
         requestTimes.set(req, Date.now());
@@ -501,6 +506,13 @@ export class PlaywrightRunner implements IPlaywrightRunner {
                   await page.locator(match.selector).first().fill(stepValue || '');
                 }
                 stepLogs.push(`Filled "${step.value}" into element`);
+
+                // Some fields trigger async validation/autocomplete calls on change —
+                // settle before the next step reads the DOM.
+                const fillSettle = await waitForPageSettle(page, { timeoutMs: 3_000 });
+                if (fillSettle.settled && fillSettle.waitedMs > 300) {
+                  stepLogs.push(`${fillSettle.reason} (${fillSettle.waitedMs}ms)`);
+                }
                 break;
               }
 
@@ -515,9 +527,7 @@ export class PlaywrightRunner implements IPlaywrightRunner {
 
                 // Post-click: wait for page/DOM load.
                 // For traditional server-side apps this catches the full page load.
-                // For SPAs (client-side routing via pushState), we extend the wait
-                // and also try networkidle so post-login redirects settle before the
-                // next step (e.g. URL assertion) runs.
+                // For SPAs (client-side routing via pushState), we extend the wait.
                 stepLogs.push(`Waiting for page to settle after click...`);
                 try {
                   // Allow up to 10s for a full load (handles server-side redirects + slow SPAs)
@@ -527,15 +537,12 @@ export class PlaywrightRunner implements IPlaywrightRunner {
                   stepLogs.push(`Load event timed out — continuing (SPA navigation expected).`);
                 }
 
-                // Additional settle for SPA client-side routing:
-                // pushState URL changes happen after 'load' fires, so we give the
-                // network an extra 5s to go quiet.
-                try {
-                  await page.waitForLoadState('networkidle', { timeout: 5_000 });
-                  stepLogs.push(`Network settled.`);
-                } catch {
-                  // networkidle is optional — safe to continue
-                }
+                // Smart settle: a click often triggers an API call (create/update/
+                // delete) without a full navigation — poll network activity and
+                // loading indicators instead of a fixed sleep, so fast operations
+                // don't pay a needless delay and slow ones aren't cut short.
+                const clickSettle = await waitForPageSettle(page);
+                stepLogs.push(`${clickSettle.reason} (${clickSettle.waitedMs}ms)`);
 
                 stepLogs.push(`Post-click URL: ${page.url()}`);
                 break;
@@ -547,6 +554,10 @@ export class PlaywrightRunner implements IPlaywrightRunner {
                 result.resolvedSelector = match.selector;
                 await page.locator(match.selector).first().selectOption(stepValue || '');
                 stepLogs.push(`Selected option: "${step.value}"`);
+                const selectSettle = await waitForPageSettle(page, { timeoutMs: 4_000 });
+                if (selectSettle.settled && selectSettle.waitedMs > 300) {
+                  stepLogs.push(`${selectSettle.reason} (${selectSettle.waitedMs}ms)`);
+                }
                 break;
               }
 
@@ -556,6 +567,7 @@ export class PlaywrightRunner implements IPlaywrightRunner {
                 result.resolvedSelector = match.selector;
                 await page.locator(match.selector).first().check();
                 stepLogs.push(`Checked checkbox`);
+                await waitForPageSettle(page, { timeoutMs: 3_000 });
                 break;
               }
 
@@ -565,6 +577,21 @@ export class PlaywrightRunner implements IPlaywrightRunner {
                 result.resolvedSelector = match.selector;
                 await page.locator(match.selector).first().uncheck();
                 stepLogs.push(`Unchecked checkbox`);
+                await waitForPageSettle(page, { timeoutMs: 3_000 });
+                break;
+              }
+
+              case 'waitUntil': {
+                const mode = step.waitMode || 'visible';
+                stepLogs.push(`Waiting until "${step.targetField}" is ${mode === 'visible' ? 'visible' : 'gone'}...`);
+                const { reached, waitedMs } = await waitUntilCondition(page, step.targetField, mode, step.waitMs || 20_000);
+                if (reached) {
+                  stepLogs.push(`Condition reached after ${waitedMs}ms — continuing.`);
+                } else {
+                  // Soft wait: never fails the suite. If the UI is just slower than
+                  // expected, the next assertion step is what actually judges success.
+                  stepLogs.push(`Condition not reached after ${waitedMs}ms — continuing anyway (soft wait, not a failure).`);
+                }
                 break;
               }
 

@@ -47,6 +47,8 @@ export function ImportFileModal({ isOpen, onClose, onImport }: ImportFileModalPr
   const [parseResult, setParseResult] = useState<ParseResult | null>(null);
   const [isLoading, setIsLoading] = useState(false);
   const [expandedRow, setExpandedRow] = useState<string | null>(null);
+  const [saveToRepository, setSaveToRepository] = useState(true);
+  const [isSavingToRepository, setIsSavingToRepository] = useState(false);
 
   const fileInputRef = useRef<HTMLInputElement>(null);
 
@@ -120,10 +122,37 @@ export function ImportFileModal({ isOpen, onClose, onImport }: ImportFileModalPr
     URL.revokeObjectURL(url);
   };
 
-  const handleImportAndRun = () => {
+  const handleImportAndRun = async () => {
     if (!parseResult || parseResult.testCases.length === 0) return;
 
     const tcs = parseResult.testCases;
+
+    if (saveToRepository) {
+      setIsSavingToRepository(true);
+      try {
+        await fetch('/api/test-cases/bulk', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            testCases: tcs.map(tc => ({
+              title: `${tc.tcId}: ${tc.title}`,
+              websiteUrl: tc.url,
+              moduleName: tc.moduleName || 'Imported Suite',
+              stepsText: tc.steps,
+              expectedResult: tc.expectedResult,
+              execType: tc.execType || 'Functional',
+              source: 'import',
+            })),
+          }),
+        });
+      } catch {
+        // Non-fatal — the import & run itself still proceeds even if the
+        // regression-bank save failed (e.g. offline / disk error).
+      } finally {
+        setIsSavingToRepository(false);
+      }
+    }
+
     const stepsText = testCasesToStepsText(tcs);
 
     // Use first TC's metadata as batch defaults
@@ -302,6 +331,22 @@ export function ImportFileModal({ isOpen, onClose, onImport }: ImportFileModalPr
                 </button>
               </div>
 
+              {/* Save-to-repository toggle */}
+              <label className="flex items-center gap-3 bg-purple-500/5 border border-purple-500/20 rounded-xl px-4 py-3 cursor-pointer select-none">
+                <input
+                  type="checkbox"
+                  checked={saveToRepository}
+                  onChange={e => setSaveToRepository(e.target.checked)}
+                  className="h-4 w-4 accent-purple-500 cursor-pointer"
+                />
+                <div>
+                  <p className="text-sm font-bold text-white">Save to Test Case Repository</p>
+                  <p className="text-xs text-zinc-500 mt-0.5">
+                    Keeps these {parseResult.testCases.length} test case{parseResult.testCases.length !== 1 ? 's' : ''} for reuse in future regression runs, without re-uploading this file.
+                  </p>
+                </div>
+              </label>
+
               {/* Parse warnings */}
               {parseResult.errors.length > 0 && (
                 <div className="bg-amber-500/5 border border-amber-500/20 rounded-xl p-4">
@@ -439,10 +484,13 @@ export function ImportFileModal({ isOpen, onClose, onImport }: ImportFileModalPr
             {modalState === 'preview' && parseResult && parseResult.testCases.length > 0 && (
               <button
                 onClick={handleImportAndRun}
-                className="flex items-center gap-2 px-6 py-2.5 rounded-xl bg-blue-600 hover:bg-blue-500 text-white font-bold text-sm transition-all shadow-lg shadow-blue-500/20"
+                disabled={isSavingToRepository}
+                className="flex items-center gap-2 px-6 py-2.5 rounded-xl bg-blue-600 hover:bg-blue-500 disabled:opacity-60 disabled:cursor-wait text-white font-bold text-sm transition-all shadow-lg shadow-blue-500/20"
               >
                 <PlayCircle className="h-4.5 w-4.5" />
-                Import &amp; Run {parseResult.testCases.length} Test Case{parseResult.testCases.length !== 1 ? 's' : ''}
+                {isSavingToRepository
+                  ? 'Saving to repository…'
+                  : `Import & Run ${parseResult.testCases.length} Test Case${parseResult.testCases.length !== 1 ? 's' : ''}`}
               </button>
             )}
           </div>

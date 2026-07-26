@@ -88,6 +88,60 @@ export class TestCaseParser implements ITestCaseParser {
         return;
       }
 
+      // 2b. WAIT UNTIL / WAIT FOR — dynamic readiness gate for async/CRUD operations.
+      //   'Wait until "Loading" disappears'
+      //   'Wait for "Loading spinner" to disappear'
+      //   'Wait until the spinner is hidden'
+      //   'Wait for the record to be saved' (falls through to visible check on the phrase)
+      // Unlike a validation assertion, this NEVER fails the suite on timeout — it's a
+      // readiness gate for slow API calls, not a pass/fail check. The step after it
+      // (typically a real assertion) is what actually judges success.
+      match = cleanText.match(
+        /^wait\s+(?:until|for)\s+(?:the\s+)?["']?([^"']+?)["']?\s+(?:to\s+)?(disappears?|is\s+(?:hidden|gone|removed))/i,
+      );
+      if (match) {
+        parsedSteps.push({
+          stepIndex,
+          rawText: trimmed,
+          type: 'action',
+          action: 'waitUntil',
+          targetField: match[1].trim(),
+          waitMode: 'hidden',
+        });
+        return;
+      }
+
+      match = cleanText.match(
+        /^wait\s+(?:until|for)\s+(?:the\s+)?["']?([^"']+?)["']?\s+(?:to\s+)?(?:appears?|is\s+(?:visible|shown|displayed))/i,
+      );
+      if (match) {
+        parsedSteps.push({
+          stepIndex,
+          rawText: trimmed,
+          type: 'action',
+          action: 'waitUntil',
+          targetField: match[1].trim(),
+          waitMode: 'visible',
+        });
+        return;
+      }
+
+      // 'Wait for page to load' / 'Wait for loading to complete' / 'Wait for API to complete' —
+      // generic readiness gate with no specific target text; relies purely on the
+      // network/spinner settle detection the runner already performs after every action.
+      match = cleanText.match(/^wait\s+for\s+(?:the\s+)?(?:page|api|loading|request|data)(?:\s+to\s+(?:load|complete|finish))?$/i);
+      if (match) {
+        parsedSteps.push({
+          stepIndex,
+          rawText: trimmed,
+          type: 'action',
+          action: 'wait',
+          targetField: 'timer',
+          waitMs: 1500,
+        });
+        return;
+      }
+
       // 3. ENTER GENERIC CREDENTIALS
       if (cleanText.toLowerCase().includes('invalid credentials') || cleanText.toLowerCase().includes('valid credentials')) {
         const isValid = cleanText.toLowerCase().includes('valid credentials') && !cleanText.toLowerCase().includes('invalid');

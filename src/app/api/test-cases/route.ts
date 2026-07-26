@@ -19,7 +19,7 @@ export async function GET(request: NextRequest) {
 export async function POST(request: NextRequest) {
   try {
     const body = await request.json();
-    const { title, description, websiteUrl, moduleName, stepsText } = body;
+    const { title, description, websiteUrl, moduleName, stepsText, expectedResult, execType, source } = body;
 
     if (!title || !stepsText) {
       return NextResponse.json(
@@ -46,6 +46,9 @@ export async function POST(request: NextRequest) {
       websiteUrl: websiteUrl?.trim() || '',
       moduleName: moduleName?.trim() || 'General',
       stepsText: stepsText,
+      expectedResult: expectedResult?.trim() || undefined,
+      execType: execType || 'Functional',
+      source: source || 'manual',
       steps,
       createdAt: new Date().toISOString(),
       updatedAt: new Date().toISOString()

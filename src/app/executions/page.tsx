@@ -281,8 +281,8 @@ export default function ExecutionsPage() {
             {/* Steps audit lists */}
             <div className="overflow-y-auto flex-1 flex flex-col gap-3 max-h-[50vh] pr-1">
               {selectedAuditRun.steps.length > 0 ? (
-                selectedAuditRun.steps.map((st) => (
-                  <div key={st.stepIndex} className="border border-zinc-900 bg-zinc-900/10 p-4 rounded-xl flex flex-col gap-3">
+                selectedAuditRun.steps.map((st, idx) => (
+                  <div key={`${idx}-${st.stepIndex}`} className="border border-zinc-900 bg-zinc-900/10 p-4 rounded-xl flex flex-col gap-3">
                     <div className="flex items-center justify-between gap-3">
                       <div className="flex items-center gap-2.5">
                         <span className="h-7 w-7 rounded bg-zinc-950 border border-zinc-900 flex items-center justify-center font-mono text-xs sm:text-sm text-zinc-400">{st.stepIndex}</span>

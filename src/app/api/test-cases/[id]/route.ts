@@ -37,7 +37,7 @@ export async function PUT(
     }
 
     const body = await request.json();
-    const { title, description, websiteUrl, moduleName, stepsText } = body;
+    const { title, description, websiteUrl, moduleName, stepsText, expectedResult, execType } = body;
 
     if (!title || !stepsText) {
       return NextResponse.json(
@@ -64,6 +64,8 @@ export async function PUT(
       websiteUrl: websiteUrl?.trim() || '',
       moduleName: moduleName?.trim() || 'General',
       stepsText: stepsText,
+      expectedResult: expectedResult !== undefined ? (expectedResult?.trim() || undefined) : existingTestCase.expectedResult,
+      execType: execType || existingTestCase.execType || 'Functional',
       steps,
       updatedAt: new Date().toISOString()
     };

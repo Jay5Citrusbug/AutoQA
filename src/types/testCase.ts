@@ -1,4 +1,4 @@
-export type ActionType = 'fill' | 'click' | 'select' | 'check' | 'uncheck' | 'navigate' | 'wait';
+export type ActionType = 'fill' | 'click' | 'select' | 'check' | 'uncheck' | 'navigate' | 'wait' | 'waitUntil';
 
 export type ValidationType =
   | 'url'          // URL contains / matches value
@@ -23,6 +23,11 @@ export interface ParsedStep {
   targetField: string; // E.g., 'email', 'loginButton', 'submit'
   value?: string;      // E.g., value to type, or text to validate
   waitMs?: number;     // For wait actions
+  // For 'waitUntil' actions: which condition to poll for before moving on.
+  // Unlike a 'visible'/'not_visible' validation, a waitUntil never fails the
+  // suite on timeout — it just proceeds (used for async/CRUD readiness gates
+  // like a spinner disappearing or a toast appearing after an API call).
+  waitMode?: 'visible' | 'hidden';
   // Human-readable reason a step could not be understood (only set when type === 'unparsed').
   parseWarning?: string;
 }
@@ -35,6 +40,11 @@ export interface TestCase {
   stepsText: string;
   websiteUrl?: string;
   moduleName?: string;
+  expectedResult?: string;
+  execType?: 'Functional' | 'Smoke' | 'Regression';
+  // How this test case entered the repository — lets the UI show provenance
+  // and distinguish hand-authored cases from ones saved for regression reuse.
+  source?: 'manual' | 'import' | 'run';
   createdAt: string;
   updatedAt: string;
 }

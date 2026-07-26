@@ -26,6 +26,12 @@ import {
 
 const DEBUG = process.env.AUTOQA_DISCOVERY_DEBUG === '1';
 
+// Structural containers are never valid interaction targets — even when their
+// id/name/data-testid happens to match the field text (e.g. a login <form
+// id="login">). Clicking or filling one is always wrong, so they're rejected
+// before scoring regardless of how well their attributes matched.
+const NON_INTERACTIVE_TAGS = new Set(['form', 'fieldset', 'html', 'body']);
+
 // Minimum confidence to accept a real DOM element. Below this we fail clearly
 // rather than acting on a wrong element or a fabricated generic selector.
 const MIN_CONFIDENCE = 35;
@@ -110,6 +116,7 @@ export class ElementDiscoveryEngine implements IElementDiscoveryEngine {
           const isVisible = await locator.isVisible({ timeout: 800 }).catch(() => false);
           if (!isVisible) return null;
           const attrs = await this._extractAttributes(page, candidate.selector);
+          if (NON_INTERACTIVE_TAGS.has(attrs.tagName)) return null;
           const { score, winningSignal } = scoreElement(attrs, ctx);
           dlog(`  ${candidate.selector} → score ${score} (${winningSignal})`);
           return { candidate, attrs, score, winningSignal };
