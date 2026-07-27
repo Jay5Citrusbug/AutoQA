@@ -30,6 +30,12 @@ export interface ParsedStep {
   waitMode?: 'visible' | 'hidden';
   // Human-readable reason a step could not be understood (only set when type === 'unparsed').
   parseWarning?: string;
+  /**
+   * Set by "verify url is exactly X". URL assertions normally accept an
+   * equivalent route (an app that calls its landing page /desktop/home still
+   * satisfies /dashboard); this demands the literal path instead.
+   */
+  strict?: boolean;
 }
 
 export interface TestCase {

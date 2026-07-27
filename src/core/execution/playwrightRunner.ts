@@ -36,17 +36,23 @@ import {
   loadSession,
   saveSession,
 } from './sessionManager';
-import { LoginPrologue, containsLogout, detectLoginPrologue, hasLoginSteps } from './loginFlow';
+import { LoginPrologue, containsLogout, detectLoginPrologue, hasLoginSteps, shouldRetryAfterReuse } from './loginFlow';
 import type { Browser, BrowserContext, Page, Request } from '@playwright/test';
 
 // Universal 30-second timeout applied to all network-dependent operations.
 const UNIVERSAL_TIMEOUT_MS = 30_000;
 
 /**
- * How many suites may be re-run with a real login after failing on a reused
- * session. Bounded so a genuinely broken app cannot double a long run's cost.
+ * How many suites in a run may be re-run with a real login after failing on a
+ * reused session.
+ *
+ * One. The retry exists to rule out a single cause — a stale cached session — and
+ * one attempt settles that. A larger budget just replays a failing app several
+ * times: every retry is another full login, and a run that fails for a real
+ * reason ends up logging in four or five times before reporting the same result.
+ * When the retry does not fix it, the failure is the answer.
  */
-const REUSE_RETRY_BUDGET = 3;
+const REUSE_RETRY_BUDGET = 1;
 
 // -----------------------------------------------------------------------
 // Device emulation presets (Playwright built-in device descriptors)
@@ -291,7 +297,13 @@ export class PlaywrightRunner implements IPlaywrightRunner {
             // is re-run once with a real login. Reuse then never turns into a false
             // failure — an assertion on a post-login flash message, say — while
             // costing nothing for the suites that pass.
-            if (result.sessionReused && result.status === 'failed' && reuseRetriesLeft > 0) {
+            const retryVerdict = shouldRetryAfterReuse(result.stepResults);
+            if (result.sessionReused && result.status === 'failed' && !retryVerdict.worthRetrying) {
+              runRegistry.pushLog(
+                runId,
+                `[${new Date().toLocaleTimeString()}] [${suite.id}] Failed after reusing a cached login, but ${retryVerdict.reason} — reporting the failure as-is.`,
+              );
+            } else if (result.sessionReused && result.status === 'failed' && reuseRetriesLeft > 0) {
               reuseRetriesLeft -= 1;
               runRegistry.pushLog(
                 runId,
@@ -418,6 +430,21 @@ export class PlaywrightRunner implements IPlaywrightRunner {
       autoFileBug: config?.autoFileBug,
     });
     context.bugReport = reportPayload.details.bugReport;
+    context.failureClassification = reportPayload.details.failureClassification;
+
+    // Say plainly, in the live log, whether this run found a product problem or
+    // tripped over its own automation — that distinction is the whole point of
+    // the run and it should not require opening the report to discover.
+    if (context.failureClassification) {
+      const fc = context.failureClassification;
+      runRegistry.pushLog(
+        runId,
+        `[${new Date().toLocaleTimeString()}] [VERDICT] ${fc.label}\n` +
+          `    ${fc.reason}\n` +
+          `    Next: ${fc.nextStep}` +
+          (fc.fileAsBug ? '' : '\n    No bug was raised — this is not an application defect.'),
+      );
+    }
 
     runRegistry.finish(runId);
 
@@ -1381,7 +1408,14 @@ export class PlaywrightRunner implements IPlaywrightRunner {
           if (!valResult.success) {
             throw new Error(valResult.error || 'Assertion check failed.');
           }
-          stepLogs.push(`Validation passed.`);
+          if (valResult.note) {
+            // A pass on something looser than a literal comparison is recorded on
+            // the step, so the report shows what was accepted and why.
+            result.assertionNote = valResult.note;
+            stepLogs.push(`Validation passed (not a literal match): ${valResult.note}`);
+          } else {
+            stepLogs.push(`Validation passed.`);
+          }
         }
 
         // Capture success screenshot

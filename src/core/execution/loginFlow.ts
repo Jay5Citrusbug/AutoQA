@@ -19,6 +19,7 @@
  * positive would silently skip real steps.
  */
 import { ParsedStep } from '@/types/testCase';
+import { StepExecutionResult } from '@/types/execution';
 
 /** Fields that identify the password input of a login form. */
 const PASSWORD_FIELD = /pass(word|wd)?$|^pwd/i;
@@ -161,4 +162,51 @@ export function detectLoginPrologue(steps: ParsedStep[]): LoginPrologue | null {
   // A prologue that never navigates has no anchor URL of its own; the runner's
   // base URL covers that case, so this is allowed.
   return { steps: prologue, length: prologue.length, rest: steps.slice(submitIdx + 1) };
+}
+
+/** URLs that mean the app has bounced us back to authentication. */
+const AUTH_URL = /\/(login|signin|sign-in|auth|sso)(\/|\?|#|$)/;
+
+export interface RetryVerdict {
+  worthRetrying: boolean;
+  /** Phrase completing "…but <reason> — reporting the failure as-is." */
+  reason: string;
+}
+
+/**
+ * Decides whether re-running a failed test case with a real login could change
+ * the outcome.
+ *
+ * The retry exists to rule out one specific cause: a cached session that has gone
+ * stale. Failures that have nothing to do with the session produce the identical
+ * result the second time, and each pointless retry costs another full login — the
+ * difference between a run that logs in once and one that logs in five times
+ * before reporting the same failure it already had.
+ */
+export function shouldRetryAfterReuse(stepResults: StepExecutionResult[]): RetryVerdict {
+  const firstFailure = stepResults.find((r) => r.status === 'failed');
+  if (!firstFailure) return { worthRetrying: false, reason: 'no failed step was recorded' };
+
+  // A step the parser could not understand fails before the browser is involved.
+  if (firstFailure.step.type === 'unparsed') {
+    return { worthRetrying: false, reason: 'the step could not be parsed, which a fresh login cannot change' };
+  }
+
+  // Being bounced back to the login screen is the signature of a dead session —
+  // precisely what the retry is for.
+  if (AUTH_URL.test((firstFailure.pageUrl || '').toLowerCase())) {
+    return { worthRetrying: true, reason: 'the page had returned to the login screen' };
+  }
+
+  // An assertion that compared two concrete values on a page we were still
+  // authenticated for is a real mismatch: the app and the expectation disagree,
+  // and logging in again does not change either one.
+  if (firstFailure.step.type === 'validation') {
+    return {
+      worthRetrying: false,
+      reason: 'the assertion failed on an authenticated page, so this is a real mismatch rather than a stale session',
+    };
+  }
+
+  return { worthRetrying: true, reason: 'the failure could have been caused by the reused session' };
 }

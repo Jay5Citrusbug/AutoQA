@@ -13,6 +13,7 @@ import {
   StepReport,
   BugReport
 } from '@/lib/report-bug-tracker';
+import { classifyFailure } from './failureClassifier';
 
 export interface GenerateOptions {
   /** When true, a drafted bug is actually filed as a Jira issue (Phase 4.4). */
@@ -170,11 +171,29 @@ export class ReportGenerator implements IReportGenerator {
       videoPath: context.testSuiteResults?.[0]?.videoPath || undefined
     };
 
-    // 3. Bug generation on failure. The draft (evidence + RCA) is always produced;
-    //    a Jira issue is only created when autoFileBug is set (Phase 4.4).
+    // 3. Bug generation on failure — but only when the application is what failed.
+    //    A step the parser could not read, or a locator that resolved to nothing,
+    //    never put a question to the app, so raising it as a product bug is noise
+    //    that teaches people to ignore the bug queue.
+    const apiLogs = collector.getAPILogs();
+    const consoleLogs = collector.getConsoleLogs();
+
     let bugReport: BugReport | undefined;
     let bugSummary: BugReportSummary | undefined;
-    if (summary.status === 'failed') {
+    const failureClassification = classifyFailure(context.stepResults, {
+      hasServerError: apiLogs.some((l) => l.statusCode >= 500),
+      hasUncaughtError: consoleLogs.some(
+        (l) => l.level === 'error' && (!!l.stackTrace || /uncaught/i.test(l.message)),
+      ),
+    });
+
+    if (failureClassification) {
+      logger.info(
+        `Run ${context.runId} failure classified as ${failureClassification.kind}: ${failureClassification.reason}`,
+      );
+    }
+
+    if (summary.status === 'failed' && failureClassification?.fileAsBug) {
       const testTitle = summary.title;
       bugReport = await bugGen.generateBugReport(
         reportId,
@@ -233,6 +252,9 @@ export class ReportGenerator implements IReportGenerator {
       details: {
         ...context,
         bugReport: bugSummary, // typed summary surfaced to the API/UI
+        // Present on every failed run, including the ones that were deliberately
+        // not raised as bugs — the reason they were not is the useful part.
+        failureClassification: failureClassification ?? undefined,
       },
     };
 

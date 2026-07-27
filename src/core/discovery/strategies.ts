@@ -17,7 +17,8 @@
  *  8. textStrategy           — button/link with matching text
  *  9. autocompleteStrategy   — [autocomplete=…]
  * 10. aliasStrategy          — semantic aliases (email → username etc.)
- * 11. similarityFallback     — broad attribute wildcard matches
+ * 11. avatarStrategy         — profile / account / initials avatars
+ * 12. similarityFallback     — broad attribute wildcard matches
  *
  * HOW TO ADD A NEW STRATEGY:
  *   1. Create a new function following the MatchStrategy signature.
@@ -344,7 +345,82 @@ export function aliasStrategy(target: string): StrategyCandidate[] {
 }
 
 // ---------------------------------------------------------------------------
-// STRATEGY 11: Similarity Fallback / Broad wildcard
+// STRATEGY 11: Avatar / Profile Strategy
+//
+// Profile menus are the one control almost no app labels in a way the generic
+// strategies can see: the trigger is a circular div holding the user's initials
+// ("JR"), with the meaning carried by shape and position rather than by text or
+// a name attribute. Steps refer to it as "the JR icon", "profile icon",
+// "account avatar" — so match on the avatar vocabulary and on bare initials.
+// ---------------------------------------------------------------------------
+
+/** Words that name a profile/account control regardless of the app. */
+const PROFILE_WORDS = [
+  'profile', 'avatar', 'account', 'usermenu', 'user menu', 'my account',
+  'user icon', 'initials', 'gravatar', 'userpic', 'photo', 'picture', 'user avatar',
+];
+
+/** Attribute fragments worth probing for a profile control. */
+const PROFILE_ATTR_HINTS = ['avatar', 'profile', 'account', 'user-menu', 'usermenu', 'user_menu'];
+
+/** True when the step is talking about a profile/account/avatar control. */
+export function isProfileTarget(target: string): boolean {
+  const t = target.toLowerCase();
+  return PROFILE_WORDS.some((w) => t.includes(w));
+}
+
+/**
+ * Extracts an initials token (e.g. "JR", "AU") from the target.
+ * Returns null unless the target is *only* initials once element nouns are
+ * stripped, so a real two-letter label like "OK" on a dialog is not hijacked.
+ */
+export function extractInitials(target: string): string | null {
+  const stripped = stripElementNouns(target).trim();
+  if (!stripped) return null;
+  return /^[A-Za-z]{1,3}$/.test(stripped) ? stripped.toUpperCase() : null;
+}
+
+export function avatarStrategy(target: string): StrategyCandidate[] {
+  const candidates: StrategyCandidate[] = [];
+  const isProfile = isProfileTarget(target);
+  const initials = extractInitials(target);
+
+  if (!isProfile && !initials) return candidates;
+
+  if (isProfile) {
+    for (const hint of PROFILE_ATTR_HINTS) {
+      candidates.push({ selector: `[data-testid*="${hint}" i]`, reason: `Profile control via data-testid ~ "${hint}"`, confidence: 84 });
+      candidates.push({ selector: `[aria-label*="${hint}" i]`, reason: `Profile control via aria-label ~ "${hint}"`, confidence: 82 });
+      candidates.push({ selector: `button[class*="${hint}" i]`, reason: `Profile button via class ~ "${hint}"`, confidence: 78 });
+      candidates.push({ selector: `[class*="${hint}" i]`, reason: `Profile control via class ~ "${hint}"`, confidence: 66 });
+      candidates.push({ selector: `img[alt*="${hint}" i]`, reason: `Profile image via alt ~ "${hint}"`, confidence: 70 });
+    }
+    // A profile menu is nearly always the trigger for a popup menu.
+    candidates.push({ selector: `header [aria-haspopup="menu"]`, reason: `Menu trigger in the page header`, confidence: 64 });
+    candidates.push({ selector: `header [aria-haspopup="true"]`, reason: `Popup trigger in the page header`, confidence: 62 });
+  }
+
+  if (initials) {
+    // Exact-text forms first: an initials avatar renders the letters verbatim.
+    candidates.push({ selector: `button:text-is("${initials}")`, reason: `Button showing initials "${initials}"`, confidence: 88 });
+    candidates.push({ selector: `[role="button"]:text-is("${initials}")`, reason: `Role=button showing initials "${initials}"`, confidence: 84 });
+    candidates.push({ selector: `[aria-label*="${initials}" i]`, reason: `aria-label contains "${initials}"`, confidence: 76 });
+    candidates.push({ selector: `[title*="${initials}" i]`, reason: `title contains "${initials}"`, confidence: 74 });
+    candidates.push({ selector: `img[alt*="${initials}" i]`, reason: `Image alt contains "${initials}"`, confidence: 72 });
+    for (const hint of PROFILE_ATTR_HINTS) {
+      candidates.push({
+        selector: `[class*="${hint}" i]:text-is("${initials}")`,
+        reason: `Avatar (class ~ "${hint}") showing initials "${initials}"`,
+        confidence: 90,
+      });
+    }
+  }
+
+  return candidates;
+}
+
+// ---------------------------------------------------------------------------
+// STRATEGY 12: Similarity Fallback / Broad wildcard
 // Last resort — broad attribute selectors + structural position guesses
 // ---------------------------------------------------------------------------
 export function similarityFallback(target: string, context?: { isInputHint?: boolean; isButtonHint?: boolean }): StrategyCandidate[] {

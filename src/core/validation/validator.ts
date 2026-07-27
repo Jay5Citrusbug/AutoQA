@@ -1,13 +1,25 @@
 import { Page } from '@playwright/test';
 import { ParsedStep } from '@/types/testCase';
+import { matchUrlLiterally, matchUrlSemantically, normaliseUrl, roleOf } from './urlMatcher';
 
 // Universal timeout: 15 seconds max wait for any validation assertion.
 // This handles slow post-login redirects and heavy SPA navigation gracefully.
 const VALIDATION_TIMEOUT_MS = 15_000; // 15 seconds
 const POLL_INTERVAL_MS = 500;           // check every 500ms
 
+export interface ValidationOutcome {
+  success: boolean;
+  error?: string;
+  /**
+   * Set when an assertion passed on something looser than a literal comparison.
+   * Always surfaced in the step log and the report — a pass the reader might
+   * disagree with has to be visible, or the flexibility becomes a blind spot.
+   */
+  note?: string;
+}
+
 export interface IValidator {
-  validate(page: Page, step: ParsedStep): Promise<{ success: boolean; error?: string }>;
+  validate(page: Page, step: ParsedStep): Promise<ValidationOutcome>;
 }
 
 export class Validator implements IValidator {
@@ -34,10 +46,36 @@ export class Validator implements IValidator {
     return { ok: false };
   }
 
+  /**
+   * Evidence that the browser really is inside the authenticated application,
+   * used to corroborate a semantic landing-page match. A visible password field
+   * means we are still at the door however the URL is spelled.
+   */
+  private async looksLikeAuthenticatedApp(page: Page): Promise<boolean> {
+    try {
+      const passwordVisible = await page
+        .locator('input[type="password"]')
+        .first()
+        .isVisible({ timeout: 500 })
+        .catch(() => false);
+      if (passwordVisible) return false;
+
+      // Application chrome that only renders for a signed-in user.
+      const chrome = await page
+        .locator('nav, header, [role="navigation"], [role="banner"], aside, [class*="sidebar" i]')
+        .first()
+        .isVisible({ timeout: 1_000 })
+        .catch(() => false);
+      return chrome;
+    } catch {
+      return false;
+    }
+  }
+
   public async validate(
     page: Page,
     step: ParsedStep
-  ): Promise<{ success: boolean; error?: string }> {
+  ): Promise<ValidationOutcome> {
     const type = step.validation;
     const value = step.value;
     const target = step.targetField;
@@ -55,35 +93,20 @@ export class Validator implements IValidator {
             return { success: false, error: 'Expected URL value was not provided.' };
           }
 
-          /**
-           * Normalise a URL or path fragment for comparison.
-           * - Lowercases everything (case-insensitive comparison)
-           * - Strips fragment identifiers (#...)
-           * - Strips trailing slashes
-           * e.g. "https://app.com/Desktop/Home/" → "https://app.com/desktop/home"
-           */
-          const normalise = (u: string) =>
-            u.toLowerCase().replace(/#.*$/, '').replace(/\/+$/, '').trim();
-
-          const needle = normalise(value);
-
-          // ── 1. Check current URL immediately (zero wait) ──────────────────
+          // ── 1. Check the current URL immediately (zero wait) ──────────────
           // Common case: navigation already completed (e.g. after click + networkidle).
-          const currentUrl = page.url();
-          if (normalise(currentUrl).includes(needle)) {
-            return { success: true };
-          }
+          const immediate = matchUrlLiterally(value, page.url());
+          if (immediate.matched) return { success: true, note: immediate.note };
 
-          let actualUrl = currentUrl;
+          let actualUrl = page.url();
 
           // ── 2. waitForURL — Playwright navigation-event based ─────────────
           // Catches standard page loads and server-side redirects.
           try {
-            await page.waitForURL(
-              (u) => normalise(u.toString()).includes(needle),
-              { timeout: VALIDATION_TIMEOUT_MS }
-            );
-            return { success: true };
+            await page.waitForURL((u) => matchUrlLiterally(value, u.toString()).matched, {
+              timeout: VALIDATION_TIMEOUT_MS,
+            });
+            return { success: true, note: matchUrlLiterally(value, page.url()).note };
           } catch {
             // timed out — fall through to polling
           }
@@ -91,18 +114,41 @@ export class Validator implements IValidator {
           // ── 3. Polling fallback — handles SPA pushState routing ───────────
           const { ok } = await this.waitUntil(async () => {
             actualUrl = page.url();
-            return normalise(actualUrl).includes(needle);
+            return matchUrlLiterally(value, actualUrl).matched;
           });
 
           if (!ok) {
             actualUrl = page.url();
+
+            // ── 4. Semantic tier ────────────────────────────────────────────
+            // The literal route never appeared. Before calling this a defect,
+            // check whether the test and the application are simply using
+            // different words for the same page — and only accept that when the
+            // page itself backs it up. Skipped entirely when the author asked
+            // for an exact route.
+            if (!step.strict) {
+              const corroborated = roleOf(value) === 'landing'
+                ? await this.looksLikeAuthenticatedApp(page)
+                : true;
+              const semantic = matchUrlSemantically(value, actualUrl, corroborated);
+              if (semantic.matched) return { success: true, note: semantic.note };
+            }
+
+            const sameRole = roleOf(value) && roleOf(value) === roleOf(actualUrl);
             return {
               success: false,
               error:
                 `URL validation failed after ${VALIDATION_TIMEOUT_MS / 1000}s. ` +
                 `Expected URL to contain "${value}", but actual URL was "${actualUrl}".\n\n` +
-                `Tip: If this is a single-page app (SPA), add "wait 2 seconds" before the URL assertion ` +
-                `to allow client-side routing to complete.`,
+                (step.strict
+                  ? `This step requested an exact route match, so no semantic fallback was attempted.`
+                  : sameRole
+                    ? `Both paths name the same kind of page, but the page did not look like a signed-in view, ` +
+                      `so this was not accepted as an equivalent route.`
+                    : `"${normaliseUrl(value)}" and "${normaliseUrl(actualUrl)}" are different pages, not two names ` +
+                      `for the same one. If the application is correct here, update the expected route in the test case.\n\n` +
+                      `Tip: If this is a single-page app (SPA), add "wait 2 seconds" before the URL assertion ` +
+                      `to allow client-side routing to complete.`),
             };
           }
           break;

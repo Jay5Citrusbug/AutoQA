@@ -20,6 +20,9 @@ import {
   textStrategy,
   autocompleteStrategy,
   aliasStrategy,
+  avatarStrategy,
+  extractInitials,
+  isProfileTarget,
   similarityFallback,
   StrategyCandidate,
 } from './strategies';
@@ -37,10 +40,68 @@ const NON_INTERACTIVE_TAGS = new Set(['form', 'fieldset', 'html', 'body']);
 const MIN_CONFIDENCE = 35;
 
 // A client-rendered app can paint its form a beat after the page reports 'load',
-// so a single DOM pass may legitimately find nothing. Re-scan a few times before
-// declaring the element missing — this only costs time on the failure path.
-const DISCOVERY_ATTEMPTS = 4;
-const DISCOVERY_RETRY_DELAY_MS = 700;
+// so a single DOM pass may legitimately find nothing. One re-scan covers that;
+// beyond it the element is genuinely absent and further passes only slow the
+// failure down. The runner already settles on network/spinner activity before
+// each step, so the render gap this guards against is short.
+const DISCOVERY_ATTEMPTS = 2;
+const DISCOVERY_RETRY_DELAY_MS = 900;
+
+// Bare tag selectors resolve to "whatever happens to be first" — fine for the
+// click that just happened, useless in a generated regression script. When one
+// wins we re-derive a unique selector for the element it actually hit.
+const GENERIC_SELECTORS = new Set(['button', 'input', 'a', 'div', 'span', 'textarea', 'select', 'img']);
+
+/** The page-side helper `_ensurePageHelpers` installs, used inside `page.evaluate` bodies. */
+type AutoQAWindow = Window & typeof globalThis & {
+  __autoqaUniqueSelector?: (el: Element) => string;
+};
+
+/** Where on the screen a step says the element lives ("top right", "bottom left"). */
+export interface PositionHint {
+  vertical?: 'top' | 'bottom';
+  horizontal?: 'left' | 'right';
+}
+
+/**
+ * Splits positional wording out of a target so it can steer the search instead of
+ * polluting the text match — "JR icon button right top" is a two-letter avatar in
+ * the top-right corner, not an element whose label contains the word "top".
+ *
+ * A lone direction word is left in the text: "Left panel" and "Right arrow" are
+ * real labels. Only two or more positional tokens (or a direction plus
+ * corner/side) are read as a location.
+ */
+export function parsePositionHint(target: string): { cleaned: string; hint: PositionHint | null } {
+  const hint: PositionHint = {};
+  const kept: string[] = [];
+  let positionalTokens = 0;
+
+  for (const token of target.split(/[\s_\-]+/)) {
+    switch (token.toLowerCase().replace(/[^a-z]/g, '')) {
+      case 'top':
+      case 'upper':
+        hint.vertical = 'top'; positionalTokens++; continue;
+      case 'bottom':
+      case 'lower':
+        hint.vertical = 'bottom'; positionalTokens++; continue;
+      case 'right':
+        hint.horizontal = 'right'; positionalTokens++; continue;
+      case 'left':
+        hint.horizontal = 'left'; positionalTokens++; continue;
+      case 'corner':
+      case 'side':
+        positionalTokens++; continue;
+      default:
+        kept.push(token);
+    }
+  }
+
+  if (positionalTokens < 2 || (!hint.vertical && !hint.horizontal)) {
+    return { cleaned: target, hint: null };
+  }
+  return { cleaned: kept.join(' ').trim() || target, hint };
+}
 
 /** Thrown when no element can be confidently matched for a field name. */
 export class ElementNotFoundError extends Error {
@@ -69,6 +130,7 @@ const STRATEGIES = [
   { name: 'text',            fn: textStrategy },
   { name: 'autocomplete',    fn: autocompleteStrategy },
   { name: 'alias',           fn: aliasStrategy },
+  { name: 'avatar',          fn: avatarStrategy },
 ];
 
 export interface IElementDiscoveryEngine {
@@ -104,10 +166,23 @@ export class ElementDiscoveryEngine implements IElementDiscoveryEngine {
   /** One full discovery pass over the current DOM. */
   private async _discoverOnce(page: Page, fieldName: string): Promise<DiscoveryMatch> {
     const rawTarget = fieldName.trim();
-    const targetText = rawTarget.toLowerCase().replace(/[\s_\-]+/g, ' ').trim();
-    const ctx: ScoringContext = { targetText, rawTarget };
+    // Positional wording steers the search rather than being matched as text.
+    const { cleaned, hint } = parsePositionHint(rawTarget);
+    const targetText = cleaned.toLowerCase().replace(/[\s_\-]+/g, ' ').trim();
+    const ctx: ScoringContext = { targetText, rawTarget: cleaned };
 
-    dlog(`Discovering element for: "${rawTarget}"`);
+    const initials = extractInitials(cleaned);
+    const isProfile = isProfileTarget(cleaned);
+    // Position, bare initials and profile vocabulary are all signals the attribute
+    // strategies are blind to, so those targets get the visual pass regardless of
+    // what the attribute scan turns up.
+    const needsVisualScan = !!hint || !!initials || isProfile;
+
+    dlog(
+      `Discovering element for: "${rawTarget}"` +
+        (hint ? ` [position ${hint.vertical ?? 'any'}-${hint.horizontal ?? 'any'}]` : '') +
+        (initials ? ` [initials ${initials}]` : ''),
+    );
 
     // Determine action context hints
     const isInputHint = this._isInputIntent(targetText);
@@ -175,9 +250,24 @@ export class ElementDiscoveryEngine implements IElementDiscoveryEngine {
       };
     }
 
-    if (bestMatch && bestMatch.score >= 50) {
+    if (bestMatch && bestMatch.score >= 50 && !needsVisualScan) {
       dlog(`Final winner: "${bestMatch.selector}" (score ${bestMatch.score}, signal ${bestMatch.strategy})`);
-      return bestMatch;
+      return await this._finalizeMatch(page, bestMatch);
+    }
+
+    // Visual pass — matches on geometry (shape, screen quadrant, chrome position)
+    // as well as text, which is the only way to pin down controls that carry their
+    // meaning visually: initials avatars, icon buttons, unlabelled menu triggers.
+    if (needsVisualScan) {
+      const visual = await this._visualScan(page, { targetText, initials, isProfile, hint });
+      if (visual && visual.score > (bestMatch?.score ?? -1)) {
+        dlog(`Visual scan wins: "${visual.selector}" (score ${visual.score}, ${visual.strategy})`);
+        bestMatch = visual;
+        bestScore = visual.score;
+      }
+      if (bestMatch && bestMatch.score >= MIN_CONFIDENCE) {
+        return await this._finalizeMatch(page, bestMatch);
+      }
     }
 
     // Full DOM scan fallback — scores every interactive element in one evaluate().
@@ -192,10 +282,146 @@ export class ElementDiscoveryEngine implements IElementDiscoveryEngine {
     // otherwise fail clearly instead of acting on the wrong element.
     if (bestMatch && bestMatch.score >= MIN_CONFIDENCE) {
       dlog(`Accepting best match: "${bestMatch.selector}" (score ${bestMatch.score})`);
-      return bestMatch;
+      return await this._finalizeMatch(page, bestMatch);
     }
 
     throw new ElementNotFoundError(rawTarget, bestScore);
+  }
+
+  /** Turns a raw winner into something safe to act on and to write into a script. */
+  private async _finalizeMatch(page: Page, match: DiscoveryMatch): Promise<DiscoveryMatch> {
+    return await this._promoteToClickable(page, await this._stabilize(page, match));
+  }
+
+  /**
+   * Replaces a bare tag selector with a unique one for the element it resolved to.
+   *
+   * `button` clicks the right thing often enough at runtime, but it is worthless in
+   * a generated regression script — the generator rejects it, and any DOM change
+   * silently re-points it. Everything else is returned untouched.
+   */
+  private async _stabilize(page: Page, match: DiscoveryMatch): Promise<DiscoveryMatch> {
+    if (!GENERIC_SELECTORS.has(match.selector.trim())) return match;
+    try {
+      await this._ensurePageHelpers(page);
+      const unique = await page
+        .locator(match.selector)
+        .first()
+        .evaluate((el) => (window as AutoQAWindow).__autoqaUniqueSelector?.(el) ?? null);
+      if (typeof unique === 'string' && unique) {
+        dlog(`Stabilised "${match.selector}" → "${unique}"`);
+        return { ...match, selector: unique };
+      }
+    } catch {
+      /* keep the original selector */
+    }
+    return match;
+  }
+
+  /**
+   * Walks a decorative match up to the control that actually handles the click.
+   *
+   * Text matching lands on the innermost node holding the text, which is often not
+   * the clickable one. Ligature icon fonts make this routine rather than rare:
+   * Material Symbols renders `<span class="material-symbols-outlined">logout</span>`,
+   * so the glyph's text content is literally the word "logout" and an exact text
+   * match prefers the 18px icon over the menu item wrapping it.
+   *
+   * Only non-interactive matches are promoted, and only to a control small enough to
+   * be a control — so inputs, buttons and links are never touched, and a stray text
+   * node cannot escalate into clicking half the page.
+   */
+  private async _promoteToClickable(page: Page, match: DiscoveryMatch): Promise<DiscoveryMatch> {
+    try {
+      await this._ensurePageHelpers(page);
+      const promoted = await page
+        .locator(match.selector)
+        .first()
+        .evaluate((el) => {
+          const INTERACTIVE =
+            'a, button, input, select, textarea, [role="button"], [role="menuitem"], [role="link"], [role="tab"], [role="option"], [onclick]';
+          if (el.matches(INTERACTIVE)) return null;
+          // A wrapper around a form field needs descending into, not ascending from.
+          if (el.querySelector('input, textarea, select')) return null;
+
+          let cur: Element | null = el.parentElement;
+          for (let depth = 0; depth < 4 && cur; depth++, cur = cur.parentElement) {
+            if (!cur.matches(INTERACTIVE)) continue;
+            const r = cur.getBoundingClientRect();
+            if (r.width > 600 || r.width * r.height > 120_000) return null;
+            return (window as AutoQAWindow).__autoqaUniqueSelector?.(cur) ?? null;
+          }
+          return null;
+        });
+
+      if (typeof promoted === 'string' && promoted && promoted !== match.selector) {
+        dlog(`Promoted "${match.selector}" → clickable ancestor "${promoted}"`);
+        return { ...match, selector: promoted, strategy: `${match.strategy} + clickable-ancestor` };
+      }
+    } catch {
+      /* keep the original selector */
+    }
+    return match;
+  }
+
+  /**
+   * Visual scan — scores on-screen candidates by shape, screen position and text.
+   *
+   * The attribute strategies can only see what the markup declares. A profile menu
+   * is typically an unlabelled round div holding two letters, which declares nothing
+   * useful; what identifies it is that it is small, circular, in the top-right of the
+   * header, and shows the user's initials. This pass reads exactly those properties.
+   */
+  private async _visualScan(
+    page: Page,
+    opts: { targetText: string; initials: string | null; isProfile: boolean; hint: PositionHint | null },
+  ): Promise<DiscoveryMatch | null> {
+    let candidates: VisualCandidate[];
+    try {
+      await this._ensurePageHelpers(page);
+      candidates = await page.evaluate(collectVisualCandidates);
+    } catch (e) {
+      dlog('Visual scan failed to collect candidates:', e);
+      return null;
+    }
+
+    dlog(`  Visual scan collected ${candidates.length} on-screen candidates`);
+
+    let best: DiscoveryMatch | null = null;
+    let bestScore = -1;
+
+    for (const c of candidates) {
+      const { score, signal } = scoreVisualCandidate(c, opts);
+      if (score <= bestScore) continue;
+      bestScore = score;
+      best = {
+        selector: c.selector,
+        score,
+        strategy: signal,
+        tagName: c.tagName,
+        attributes: c.attrs,
+      };
+    }
+
+    if (best) dlog(`  Visual best: "${best.selector}" (${best.score}, ${best.strategy})`);
+    return best;
+  }
+
+  /**
+   * Prepares the page for the functions we hand to `page.evaluate` (idempotent).
+   *
+   * Bundlers that preserve function names (esbuild/tsx and friends) rewrite every
+   * named function into `__name(fn, "fn")`. That helper is defined in the bundle,
+   * not in the page, so any evaluated function containing one dies with
+   * "__name is not defined" — Playwright serialises the source, never the module
+   * scope around it. Shimming it as identity makes the evaluated code run as
+   * written. Passed as a string so it cannot itself be rewritten.
+   */
+  private async _ensurePageHelpers(page: Page): Promise<void> {
+    await page
+      .evaluate('window.__name = window.__name || function (fn) { return fn; }')
+      .catch(() => {});
+    await page.evaluate(installUniqueSelectorHelper).catch(() => {});
   }
 
   /**
@@ -203,6 +429,7 @@ export class ElementDiscoveryEngine implements IElementDiscoveryEngine {
    */
   private async _fullDomScan(page: Page, ctx: ScoringContext): Promise<DiscoveryMatch | null> {
     try {
+      await this._ensurePageHelpers(page);
       const elementList = await page.evaluate(() => {
         const elements = Array.from(document.querySelectorAll(
           'input, button, select, textarea, a, [role="button"], [role="checkbox"], [role="textbox"], [role="link"], [contenteditable="true"]'
@@ -538,4 +765,246 @@ export class ElementDiscoveryEngine implements IElementDiscoveryEngine {
       return map;
     });
   }
+}
+
+// ---------------------------------------------------------------------------
+// Visual scan — page-side collection + Node-side scoring
+//
+// Everything below runs against geometry rather than markup, so it can identify
+// controls whose meaning is purely visual (initials avatars, icon-only buttons,
+// unlabelled menu triggers) that the attribute strategies cannot see.
+// ---------------------------------------------------------------------------
+
+interface VisualCandidate {
+  selector: string;
+  tagName: string;
+  text: string;
+  ariaLabel: string;
+  title: string;
+  alt: string;
+  testId: string;
+  className: string;
+  role: string;
+  hasPopup: boolean;
+  inHeader: boolean;
+  /** Small, square and heavily rounded — the shape of an avatar / icon button. */
+  circular: boolean;
+  area: number;
+  /** Centre of the element as a 0–1 fraction of the viewport. */
+  cx: number;
+  cy: number;
+  attrs: Record<string, string>;
+}
+
+/**
+ * Defines `window.__autoqaUniqueSelector(el)` — the shortest selector that
+ * resolves back to exactly that element, falling back to a structural path.
+ * Runs in the browser; safe to call repeatedly.
+ */
+function installUniqueSelectorHelper(): void {
+  const w = window as AutoQAWindow;
+  if (w.__autoqaUniqueSelector) return;
+
+  const quote = (v: string) => v.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
+  const isSimpleToken = (v: string) => /^[A-Za-z][\w-]*$/.test(v);
+
+  const structuralPath = (el: Element): string => {
+    const parts: string[] = [];
+    let cur: Element | null = el;
+    while (cur && cur !== document.documentElement) {
+      if (cur.id && isSimpleToken(cur.id)) {
+        parts.unshift('#' + cur.id);
+        break;
+      }
+      let seg = cur.tagName.toLowerCase();
+      const parent: Element | null = cur.parentElement;
+      if (parent) {
+        const twins = Array.from(parent.children).filter((s) => s.tagName === cur!.tagName);
+        if (twins.length > 1) seg += `:nth-of-type(${twins.indexOf(cur) + 1})`;
+      }
+      parts.unshift(seg);
+      cur = parent;
+    }
+    return parts.join(' > ');
+  };
+
+  w.__autoqaUniqueSelector = (el: Element): string => {
+    const tag = el.tagName.toLowerCase();
+    const tries: string[] = [];
+
+    if (el.id && isSimpleToken(el.id)) tries.push(`#${el.id}`);
+    for (const attr of ['data-testid', 'data-test', 'data-cy']) {
+      const v = el.getAttribute(attr);
+      if (v) tries.push(`[${attr}="${quote(v)}"]`);
+    }
+    const ariaLabel = el.getAttribute('aria-label');
+    if (ariaLabel) tries.push(`${tag}[aria-label="${quote(ariaLabel)}"]`);
+    const name = el.getAttribute('name');
+    if (name) tries.push(`${tag}[name="${quote(name)}"]`);
+
+    // Utility-framework class soup produces brittle selectors, so only
+    // hand-written-looking class names are considered.
+    const classes = Array.from(el.classList).filter((c) => isSimpleToken(c) && c.length > 2 && c.length < 40);
+    if (classes.length > 0) tries.push(tag + '.' + classes.slice(0, 3).join('.'));
+
+    for (const sel of tries) {
+      try {
+        if (document.querySelector(sel) === el) return sel;
+      } catch {
+        /* invalid selector — try the next form */
+      }
+    }
+    return structuralPath(el);
+  };
+}
+
+/** Page-side: gathers every visible, plausibly-clickable element with its geometry. */
+function collectVisualCandidates(): VisualCandidate[] {
+  const uniqueSelector = (window as AutoQAWindow).__autoqaUniqueSelector as (el: Element) => string;
+  const vw = window.innerWidth || 1;
+  const vh = window.innerHeight || 1;
+
+  const INTERACTIVE = [
+    'button', 'a[href]', '[role="button"]', '[role="menuitem"]', '[role="link"]', '[role="img"]',
+    'input[type="button"]', 'input[type="submit"]', 'img', '[onclick]', '[tabindex]',
+    '[aria-haspopup]', '[data-testid]', '[data-test]', '[data-cy]',
+  ].join(', ');
+
+  const pool = new Set<Element>(Array.from(document.querySelectorAll(INTERACTIVE)));
+
+  // Icon triggers are frequently plain divs or spans; `cursor: pointer` is the
+  // only thing marking them clickable. Bounded so a huge DOM cannot stall the scan.
+  for (const el of Array.from(document.querySelectorAll('div, span')).slice(0, 3000)) {
+    const r = el.getBoundingClientRect();
+    if (r.width < 12 || r.height < 12 || r.width > 260 || r.height > 260) continue;
+    if (window.getComputedStyle(el).cursor !== 'pointer') continue;
+    pool.add(el);
+  }
+
+  const HEADER_SEL =
+    'header, nav, [role="banner"], [role="navigation"], [class*="header" i], [class*="navbar" i], [class*="topbar" i], [class*="appbar" i]';
+
+  const out: VisualCandidate[] = [];
+  for (const el of pool) {
+    const r = el.getBoundingClientRect();
+    if (r.width <= 0 || r.height <= 0) continue;
+    if (r.bottom < 0 || r.top > vh || r.right < 0 || r.left > vw) continue; // scrolled out of view
+
+    const st = window.getComputedStyle(el);
+    if (st.display === 'none' || st.visibility === 'hidden' || Number(st.opacity) === 0) continue;
+
+    const radius = st.borderRadius || '0px';
+    const radiusPct = radius.includes('%')
+      ? parseFloat(radius)
+      : (parseFloat(radius) || 0) / Math.max(r.width, 1) * 100;
+
+    const attrs: Record<string, string> = {};
+    for (const a of Array.from(el.attributes)) attrs[a.name] = a.value;
+
+    out.push({
+      selector: uniqueSelector(el),
+      tagName: el.tagName.toLowerCase(),
+      text: ((el as HTMLElement).innerText || el.textContent || '').replace(/\s+/g, ' ').trim().slice(0, 80),
+      ariaLabel: el.getAttribute('aria-label') || '',
+      title: el.getAttribute('title') || '',
+      alt: el.getAttribute('alt') || '',
+      testId: el.getAttribute('data-testid') || el.getAttribute('data-test') || el.getAttribute('data-cy') || '',
+      className: typeof el.className === 'string' ? el.className : '',
+      role: el.getAttribute('role') || '',
+      hasPopup: el.hasAttribute('aria-haspopup') || el.hasAttribute('aria-expanded'),
+      inHeader: !!el.closest(HEADER_SEL),
+      circular: Math.abs(r.width - r.height) <= 6 && r.width >= 18 && r.width <= 96 && radiusPct >= 25,
+      area: Math.round(r.width * r.height),
+      cx: (r.left + r.width / 2) / vw,
+      cy: (r.top + r.height / 2) / vh,
+      attrs,
+    });
+  }
+
+  return out;
+}
+
+const PROFILE_MARKERS = ['avatar', 'profile', 'account', 'user-menu', 'usermenu', 'user menu', 'userpic', 'my account'];
+
+/** Node-side: combines identity evidence (text/labels) with visual evidence (shape/position). */
+function scoreVisualCandidate(
+  c: VisualCandidate,
+  opts: { targetText: string; initials: string | null; isProfile: boolean; hint: PositionHint | null },
+): { score: number; signal: string } {
+  const { targetText, initials, isProfile, hint } = opts;
+  const norm = (s: string) => (s || '').toLowerCase().replace(/\s+/g, ' ').trim();
+
+  const text = norm(c.text);
+  const labelBag = norm([c.ariaLabel, c.title, c.alt, c.testId, c.className, c.role].join(' '));
+
+  let score = 0;
+  let signal = 'visual:geometry';
+  // Geometry alone never justifies a click — something must also identify the
+  // element as the one the step named.
+  let identified = false;
+
+  if (initials) {
+    const want = initials.toLowerCase();
+    if (text === want) {
+      score += 55; signal = 'visual:initials-text'; identified = true;
+    } else if (norm(c.ariaLabel) === want || norm(c.title) === want || norm(c.alt) === want) {
+      score += 45; signal = 'visual:initials-label'; identified = true;
+    } else if (want.length >= 2 && labelBag.includes(want)) {
+      score += 15; identified = true;
+    } else if (text && text.length <= 4) {
+      // An avatar showing somebody else's initials is positive evidence of the
+      // wrong element, not merely a missing match: on a page full of member
+      // avatars, "click AU" must never settle for the JR one because it happens
+      // to sit where the step said to look.
+      return { score: 0, signal: 'visual:initials-mismatch' };
+    }
+  }
+
+  if (targetText && targetText !== (initials || '').toLowerCase()) {
+    if (text === targetText) {
+      score += 50; signal = 'visual:text'; identified = true;
+    } else if (text && text.includes(targetText)) {
+      score += 22; identified = true;
+    }
+    if (labelBag.includes(targetText)) {
+      score += 30; identified = true;
+      if (signal === 'visual:geometry') signal = 'visual:label';
+    }
+  }
+
+  const profileish = PROFILE_MARKERS.some((m) => labelBag.includes(m));
+  if (profileish) {
+    score += isProfile ? 45 : 22;
+    identified = true;
+    if (isProfile && signal === 'visual:geometry') signal = 'visual:profile';
+  } else if (isProfile && c.circular && c.inHeader) {
+    // "Click the profile icon" on an app that labels nothing: a small round
+    // control in the site chrome is the conventional place for it.
+    score += 25;
+    identified = true;
+    signal = 'visual:profile-shape';
+  }
+
+  if (c.circular) score += 20;
+  if (c.inHeader) score += 10;
+  if (c.hasPopup) score += 8;
+  if (c.area < 6000) score += 5;
+
+  if (hint) {
+    const band = (v: number, near: number, mid: number, far: number, invert: boolean) => {
+      const x = invert ? 1 - v : v;
+      if (x >= near) return 30;
+      if (x >= mid) return 12;
+      if (x <= far) return -45;
+      return 0;
+    };
+    if (hint.vertical === 'top') score += band(c.cy, 0.75, 0.55, 0.4, true);
+    if (hint.vertical === 'bottom') score += band(c.cy, 0.75, 0.55, 0.4, false);
+    if (hint.horizontal === 'right') score += band(c.cx, 0.8, 0.6, 0.4, false);
+    if (hint.horizontal === 'left') score += band(c.cx, 0.8, 0.6, 0.4, true);
+    if (signal === 'visual:geometry') signal = 'visual:position';
+  }
+
+  if (!identified) score = Math.min(score, 30);
+  return { score: Math.max(0, Math.min(100, score)), signal };
 }

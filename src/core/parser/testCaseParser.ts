@@ -26,10 +26,82 @@ export class TestCaseParser implements ITestCaseParser {
       .trim();
   }
 
+  /**
+   * A single pasted line often carries a whole numbered sequence:
+   *   "1.Navigate to https://x/home 2. Click JR icon 3. Click Logout4. Verify Login page"
+   * Splits it into one line per numbered item.
+   *
+   * Only fires when the markers form an ascending-by-one run of at least two, so
+   * decimals ("wait 2.5 seconds"), version strings and list-like prose survive intact.
+   * Markers inside a URL are ignored — "http://1.2.3.4/x" is not a step list.
+   */
+  private splitNumberedRun(line: string): string[] {
+    const urlSpans: Array<[number, number]> = [];
+    for (const m of line.matchAll(/https?:\/\/\S+/gi)) {
+      urlSpans.push([m.index!, m.index! + m[0].length]);
+    }
+    const insideUrl = (i: number) => urlSpans.some(([s, e]) => i >= s && i < e);
+
+    type Marker = { start: number; end: number; num: number };
+    const markers: Marker[] = [];
+    // A marker is "<digits><dot|paren>" immediately followed by a letter, e.g.
+    // "2. Click" or the un-spaced "Logout4. Verify".
+    for (const m of line.matchAll(/(\d{1,2})\s*[.)]\s*(?=[A-Za-z])/g)) {
+      const start = m.index!;
+      if (insideUrl(start)) continue;
+      // Digits glued to the left mean this is part of a larger number ("v1.2", "10.5").
+      if (start > 0 && /\d/.test(line[start - 1])) continue;
+      markers.push({ start, end: start + m[0].length, num: parseInt(m[1], 10) });
+    }
+
+    // Keep only the ascending-by-one chain, so a stray "3." mid-sentence cannot split text.
+    const chain: Marker[] = [];
+    for (const mk of markers) {
+      if (chain.length === 0) chain.push(mk);
+      else if (mk.num === chain[chain.length - 1].num + 1) chain.push(mk);
+    }
+    if (chain.length < 2) return [line];
+
+    const parts: string[] = [];
+    const head = line.slice(0, chain[0].start).trim();
+    if (head) parts.push(head);
+    chain.forEach((mk, i) => {
+      const stop = i + 1 < chain.length ? chain[i + 1].start : line.length;
+      const body = line.slice(mk.end, stop).trim();
+      if (body) parts.push(body);
+    });
+    return parts;
+  }
+
+  /**
+   * Real UI actions the runner has no implementation for. Recognising them lets
+   * the step fail with an accurate message — and lets the failure classifier mark
+   * it an automation gap rather than raising it as a defect in the application.
+   */
+  private static readonly UNSUPPORTED_ACTION =
+    /^(hover|scroll|refresh|reload|drag|drop|upload|download|resize|maximi[sz]e|minimi[sz]e|zoom|swipe|double[-\s]?click|right[-\s]?click|go\s+back|go\s+forward|switch\s+to|press\s+(?:the\s+)?(?:enter|tab|escape|esc|space|backspace|delete|arrow\w*)\b)/i;
+
+  /** Derives a URL fragment from a page name: "Login" → "/login", "Sign Up" → "/sign-up". */
+  private pageNameToUrlFragment(pageName: string): string | null {
+    const slug = pageName
+      .trim()
+      .toLowerCase()
+      .replace(/[^a-z0-9\s-]/g, '')
+      .trim()
+      .replace(/\s+/g, '-');
+    // Multi-word page names rarely map cleanly onto a path segment — asserting on
+    // a guessed slug would invent failures, so only single-word names are used.
+    if (!slug || slug.includes('-')) return null;
+    return `/${slug}`;
+  }
+
   public parse(rawSteps: string[]): ParsedStep[] {
     const parsedSteps: ParsedStep[] = [];
 
-    rawSteps.forEach((rawLine, idx) => {
+    // Expand any line that packs several numbered steps into one before parsing.
+    const lines = rawSteps.flatMap((line) => this.splitNumberedRun(line));
+
+    lines.forEach((rawLine) => {
       const trimmed = rawLine.trim();
       if (!trimmed) return;
 
@@ -39,7 +111,28 @@ export class TestCaseParser implements ITestCaseParser {
       }
 
       const cleanText = this.cleanStepText(trimmed);
-      const stepIndex = idx + 1;
+      // Numbering is sequential over emitted steps: a compound line expands into
+      // several steps and one sentence can yield more than one assertion, so the
+      // source line index is no longer a usable step number.
+      const stepIndex = parsedSteps.length + 1;
+
+      // 0b. Recognised but unimplemented actions are caught before anything else.
+      // "Press Enter" is a keystroke, not a click on an element labelled "Enter" —
+      // letting the click rule claim it produces a confusing element-not-found
+      // failure instead of an accurate "not supported" one.
+      const unsupportedAction = cleanText.match(TestCaseParser.UNSUPPORTED_ACTION);
+      if (unsupportedAction) {
+        parsedSteps.push({
+          stepIndex,
+          rawText: trimmed,
+          type: 'unparsed',
+          targetField: '',
+          parseWarning:
+            `Unsupported action: "${unsupportedAction[1].toLowerCase()}" is not implemented by the runner ` +
+            `(step: "${trimmed}"). Supported actions are navigate, click, fill, select, check, uncheck and wait.`,
+        });
+        return;
+      }
 
       // 1. GOTO / NAVIGATE TO
       let match = cleanText.match(/^(?:navigate\s+to|go\s+to|goto|open|visit|load|browse\s+to)\b/i);
@@ -143,7 +236,12 @@ export class TestCaseParser implements ITestCaseParser {
       }
 
       // 3. ENTER GENERIC CREDENTIALS
-      if (cleanText.toLowerCase().includes('invalid credentials') || cleanText.toLowerCase().includes('valid credentials')) {
+      // Gated on an actual input verb. Without the gate, an assertion that merely
+      // mentions the phrase — 'System displays "Invalid credentials" message' —
+      // was turned into a login attempt, so the test typed credentials where it
+      // was supposed to be checking an error.
+      const isCredentialAction = /^(?:enter|type|fill|input|use|provide|supply|submit|login\s+with|log\s+in\s+with|sign\s+in\s+with)\b/i.test(cleanText);
+      if (isCredentialAction && /\b(?:in)?valid\s+credentials\b/i.test(cleanText)) {
         const isValid = cleanText.toLowerCase().includes('valid credentials') && !cleanText.toLowerCase().includes('invalid');
         parsedSteps.push({
           stepIndex,
@@ -213,14 +311,20 @@ export class TestCaseParser implements ITestCaseParser {
       }
 
       // 5. CLICK ELEMENT
-      match = cleanText.match(/^(?:click|press|tap)(?:\s+on|\s+the)?\s+["']?([^"']+)["']?(?:\s+button|\s+link)?/i);
+      // The whole phrase after the verb is the target. Filler words are stripped
+      // separately rather than inside the capture — matching "on"/"the" as part of
+      // the pattern made 'Click on the "Save" button' resolve to the word "the".
+      match = cleanText.match(/^(?:click|press|tap|choose)\s+(?:on\s+)?(?:the\s+)?(.+)$/i);
       if (match) {
+        // A quoted fragment anywhere in the phrase is the author naming the
+        // element exactly; it beats the surrounding words.
+        const quoted = match[1].match(/["']([^"']+)["']/);
         parsedSteps.push({
           stepIndex,
           rawText: trimmed,
           type: 'action',
           action: 'click',
-          targetField: this.cleanTargetField(match[1]),
+          targetField: this.cleanTargetField(quoted ? quoted[1] : match[1]),
         });
         return;
       }
@@ -267,7 +371,11 @@ export class TestCaseParser implements ITestCaseParser {
 
       // --- VALIDATIONS ---
       // 9. VERIFY URL
-      match = cleanText.match(/^(?:verify|assert|check)\s+(?:that\s+)?url\s+(?:contains|matches|is)\s+["']?([^"']+)["']?/i);
+      // "exactly" opts out of equivalent-route matching for steps where the
+      // literal path is the thing under test.
+      match = cleanText.match(
+        /^(?:verify|assert|check)\s+(?:that\s+)?url\s+(?:contains|matches|is)\s+(exactly\s+)?["']?([^"']+)["']?/i,
+      );
       if (match) {
         parsedSteps.push({
           stepIndex,
@@ -275,7 +383,8 @@ export class TestCaseParser implements ITestCaseParser {
           type: 'validation',
           validation: 'url',
           targetField: 'url',
-          value: match[1],
+          value: match[2].trim(),
+          strict: match[1] ? true : undefined,
         });
         return;
       }
@@ -534,8 +643,208 @@ export class TestCaseParser implements ITestCaseParser {
       }
 
 
+      // 14-L. VERIFY <NAME> PAGE
+      //   'Verify Login page'
+      //   'verify that the Dashboard page is displayed'
+      //   'check user is on the Login page'
+      // A page name is a routing claim, so it becomes a URL assertion rather than a
+      // body-text search — "Login" appears on plenty of pages that are not /login.
+      match = cleanText.match(
+        /^(?:verify|assert|check)\s+(?:that\s+)?(?:the\s+)?(?:user\s+(?:is|lands?)\s+(?:on|at|redirected\s+to)\s+)?(?:the\s+)?([A-Za-z][A-Za-z0-9 ]*?)\s+(?:page|screen)(?:\s+is\s+(?:displayed|visible|shown|loaded|open))?\s*$/i,
+      );
+      if (match) {
+        const fragment = this.pageNameToUrlFragment(match[1]);
+        if (fragment) {
+          parsedSteps.push({
+            stepIndex,
+            rawText: trimmed,
+            type: 'validation',
+            validation: 'url',
+            targetField: 'url',
+            value: fragment,
+          });
+          return;
+        }
+      }
+
+      // 14-M. REDIRECTION SENTENCES (typical "Expected Result" prose)
+      //   'User is redirected to Login page where "Welcome Back!" heading ... are visible'
+      //   'The user should be taken to the Dashboard page'
+      // Emits the routing assertion, plus one visibility assertion per quoted phrase
+      // in the same sentence — a single sentence legitimately makes several claims.
+      match = cleanText.match(
+        /^(?:the\s+)?(?:user|users|you|we|they|i)\s+(?:is|are|should\s+be|shall\s+be|will\s+be|gets?|get|was|were)\s+(?:redirected|navigated|taken|sent|returned|routed|brought|landed)\s+(?:back\s+)?(?:to|on|onto|into)\s+(?:the\s+)?(.+)$/i,
+      );
+      if (match) {
+        const rest = match[1];
+        // Everything before a connector is the destination; the remainder describes
+        // what should be on that destination.
+        const destination = rest.split(/\s+(?:where|which|with|showing|displaying|containing|and\s+(?:see|sees))\b/i)[0];
+        const pageName = destination
+          .replace(/\b(?:page|screen|view|url|the|a|an)\b/gi, ' ')
+          .replace(/["'.,;!?]/g, ' ')
+          .trim();
+
+        let emitted = false;
+        const fragment = this.pageNameToUrlFragment(pageName);
+        if (fragment) {
+          parsedSteps.push({
+            stepIndex,
+            rawText: trimmed,
+            type: 'validation',
+            validation: 'url',
+            targetField: 'url',
+            value: fragment,
+          });
+          emitted = true;
+        }
+
+        for (const q of cleanText.matchAll(/["']([^"']+)["']/g)) {
+          const phrase = q[1].trim();
+          if (!phrase) continue;
+          parsedSteps.push({
+            stepIndex: parsedSteps.length + 1,
+            rawText: trimmed,
+            type: 'validation',
+            validation: 'visible',
+            targetField: phrase,
+            value: phrase,
+          });
+          emitted = true;
+        }
+
+        if (emitted) return;
+      }
+
+      // 14-N0. NEGATIVE DECLARATIVE VISIBILITY — must precede the positive form,
+      // which would otherwise read "No error message is displayed" as a request to
+      // find something called "No error message".
+      match = cleanText.match(/^no\s+(.+?)\s+(?:is|are|should\s+be)\s+(?:visible|displayed|shown|present)/i)
+        || cleanText.match(/^(?:the\s+)?(.+?)\s+(?:is|are)\s+not\s+(?:visible|displayed|shown|present)/i);
+      if (match) {
+        const phrase = match[1].replace(/["'.,;!?]/g, '').trim();
+        if (phrase) {
+          parsedSteps.push({
+            stepIndex,
+            rawText: trimmed,
+            type: 'validation',
+            validation: 'not_visible',
+            targetField: phrase,
+            value: phrase,
+          });
+          return;
+        }
+      }
+
+      // 14-N1. SOMEONE/SOMETHING SEES OR SHOWS SOMETHING
+      //   'The user can see the WorkHub menu'
+      //   'User sees "Task created successfully"'
+      //   'System displays "Invalid credentials" message'
+      //   'The page shows the Dashboard'
+      match = cleanText.match(
+        /^(?:the\s+)?(?:user|users|system|page|app|application|screen|it)\s+(?:can\s+|should\s+|will\s+|must\s+)?(?:see|sees|view|views|display|displays|show|shows|present|presents)\s+(?:the\s+|a\s+|an\s+)?(.+)$/i,
+      );
+      if (match) {
+        const quoted = [...match[1].matchAll(/["']([^"']+)["']/g)].map((q) => q[1].trim()).filter(Boolean);
+        const phrases = quoted.length > 0
+          ? quoted
+          : [match[1].replace(/\s+(?:message|text|label|heading|banner|notification|option|menu|page|screen)\s*$/i, '').replace(/["'.,;!?]/g, '').trim()];
+        let emitted = false;
+        for (const phrase of phrases) {
+          if (!phrase) continue;
+          parsedSteps.push({
+            stepIndex: parsedSteps.length + 1,
+            rawText: trimmed,
+            type: 'validation',
+            validation: 'visible',
+            targetField: phrase,
+            value: phrase,
+          });
+          emitted = true;
+        }
+        if (emitted) return;
+      }
+
+      // 14-N2. SOMETHING APPEARS / OPENS
+      //   'Error message "Incorrect Email or Password" appears'
+      //   'A confirmation dialog appears'
+      //   'The profile menu opens'
+      match = cleanText.match(/^(?:the\s+|a\s+|an\s+)?(.+?)\s+(?:appears?|opens?|pops?\s+up|is\s+opened)\s*$/i);
+      if (match) {
+        const quoted = match[1].match(/["']([^"']+)["']/);
+        const phrase = (quoted ? quoted[1] : match[1]).replace(/["'.,;!?]/g, '').trim();
+        if (phrase) {
+          parsedSteps.push({
+            stepIndex,
+            rawText: trimmed,
+            type: 'validation',
+            validation: 'visible',
+            targetField: phrase,
+            value: phrase,
+          });
+          return;
+        }
+      }
+
+      // 14-N3. DECLARATIVE ENABLED / DISABLED
+      //   'The Create Task button is enabled'
+      //   'The Submit button is disabled'
+      match = cleanText.match(/^(?:the\s+)?(.+?)\s+(?:is|are|should\s+be)\s+(enabled|disabled)\s*$/i);
+      if (match) {
+        const phrase = match[1].replace(/["'.,;!?]/g, '').trim();
+        if (phrase) {
+          parsedSteps.push({
+            stepIndex,
+            rawText: trimmed,
+            type: 'validation',
+            validation: match[2].toLowerCase() === 'disabled' ? 'disabled' : 'enabled',
+            targetField: phrase,
+            value: phrase,
+          });
+          return;
+        }
+      }
+
+      // 14-N. DECLARATIVE VISIBILITY (no leading verb — common in "Expected Result" cells)
+      //   '"Welcome Back!" heading and login details text are visible'
+      //   'The success banner is displayed'
+      // Quoted phrases are the precise claim; each becomes its own assertion.
+      if (/\b(?:is|are)\s+(?:visible|displayed|shown|present|available)\b/i.test(cleanText)) {
+        const quoted = [...cleanText.matchAll(/["']([^"']+)["']/g)].map((q) => q[1].trim()).filter(Boolean);
+        if (quoted.length > 0) {
+          quoted.forEach((phrase) => {
+            parsedSteps.push({
+              stepIndex: parsedSteps.length + 1,
+              rawText: trimmed,
+              type: 'validation',
+              validation: 'visible',
+              targetField: phrase,
+              value: phrase,
+            });
+          });
+          return;
+        }
+
+        // No quotes — treat the subject of the sentence as the thing to look for.
+        const subject = cleanText.match(/^(?:the\s+)?(.+?)\s+(?:is|are)\s+(?:visible|displayed|shown|present|available)\b/i);
+        if (subject) {
+          const phrase = subject[1].replace(/["'.,;!?]/g, '').trim();
+          if (phrase) {
+            parsedSteps.push({
+              stepIndex,
+              rawText: trimmed,
+              type: 'validation',
+              validation: 'visible',
+              targetField: phrase,
+              value: phrase,
+            });
+            return;
+          }
+        }
+      }
+
       // 14. ROBUST "EXPECTED RESULT" & "SHOULD" ASSERTIONS
-      if (cleanText.toLowerCase().includes('verify') || 
+      if (cleanText.toLowerCase().includes('verify') ||
           cleanText.toLowerCase().includes('assert') || 
           cleanText.toLowerCase().includes('expected') ||
           cleanText.toLowerCase().includes('should')) {
@@ -635,7 +944,22 @@ export class TestCaseParser implements ITestCaseParser {
       }
     });
 
-    return parsedSteps;
+    // A step list and its "Expected Result" prose often restate the same claim
+    // ("Verify Login page" + "User is redirected to Login page"). Running the
+    // identical assertion twice in a row adds time and noise, never coverage.
+    const deduped = parsedSteps.filter((step, i) => {
+      if (i === 0 || step.type !== 'validation') return true;
+      const prev = parsedSteps[i - 1];
+      return !(
+        prev.type === 'validation' &&
+        prev.validation === step.validation &&
+        prev.targetField === step.targetField &&
+        prev.value === step.value
+      );
+    });
+    deduped.forEach((step, i) => { step.stepIndex = i + 1; });
+
+    return deduped;
   }
 
   /**

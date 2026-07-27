@@ -32,6 +32,12 @@ export interface StepExecutionResult {
    * here come from the one real login that primed the session.
    */
   reusedSession?: boolean;
+  /**
+   * Why a passing assertion was accepted on something other than a literal
+   * comparison — e.g. the app's landing page is /desktop/home and the test
+   * asked for /dashboard. Present only on such passes, so they stay visible.
+   */
+  assertionNote?: string;
 }
 
 export interface ConsoleMessageRecord {
@@ -92,6 +98,22 @@ export interface ExecutionContext {
   bugReport?: BugReportSummary;
   /** How login-session reuse behaved for this run. */
   sessionReuse?: SessionReuseSummary;
+  /**
+   * Whether a failed run failed because the application misbehaved, because the
+   * automation could not carry out a step, or because of the environment. Only
+   * the first is raised as a product bug.
+   */
+  failureClassification?: FailureClassification;
+}
+
+/** Verdict on what a failed run actually tells you. See core/reporting/failureClassifier. */
+export interface FailureClassification {
+  kind: 'product-defect' | 'automation-gap' | 'environment';
+  label: string;
+  reason: string;
+  nextStep: string;
+  fileAsBug: boolean;
+  stepIndex?: number;
 }
 
 export type ScriptVerificationStatus = 'verified' | 'broken' | 'skipped' | 'error';
