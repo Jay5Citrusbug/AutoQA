@@ -31,11 +31,29 @@ export interface ParsedStep {
   // Human-readable reason a step could not be understood (only set when type === 'unparsed').
   parseWarning?: string;
   /**
+   * A concrete rewrite that would make an unparsed step run. Shown wherever the
+   * warning is shown, because "could not be understood" without an example is
+   * the reader's problem, not an explanation.
+   */
+  parseSuggestion?: string;
+  /**
    * Set by "verify url is exactly X". URL assertions normally accept an
    * equivalent route (an app that calls its landing page /desktop/home still
    * satisfies /dashboard); this demands the literal path instead.
    */
   strict?: boolean;
+  /**
+   * The step named a field but no value ("Enter workpod name"), so the runner
+   * supplies one at execution time rather than refusing to run.
+   *
+   * Deliberately resolved during execution, not here: the value depends on what
+   * the field turns out to be (an email input needs an address, a dropdown needs
+   * one of its own options), and a create-flow re-run needs a *different* value
+   * each time or the second run collides with the first one's data. Whatever
+   * gets used is always logged and recorded on the step result — auto-supplied
+   * data that a reader cannot see is indistinguishable from a test that lies.
+   */
+  autoValue?: boolean;
 }
 
 export interface TestCase {

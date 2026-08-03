@@ -9,6 +9,7 @@
 import { Page } from '@playwright/test';
 import { DiscoveryMatch } from '@/types/execution';
 import { scoreElement, ElementAttributes, ScoringContext } from './scoring';
+import { waitForPageSettle } from '../execution/smartWait';
 import {
   semanticTypeStrategy,
   ariaRoleStrategy,
@@ -46,6 +47,29 @@ const MIN_CONFIDENCE = 35;
 // each step, so the render gap this guards against is short.
 const DISCOVERY_ATTEMPTS = 2;
 const DISCOVERY_RETRY_DELAY_MS = 900;
+
+/**
+ * A discovery pass can fail two very different ways, and they deserve different
+ * retries:
+ *
+ *   - some elements were on screen, just none of them matched the field the step
+ *     named — that is a genuine "not found", and re-scanning the same rendered
+ *     page a moment later almost never changes the answer.
+ *   - literally nothing was visible anywhere — not even a generic <button> —
+ *     which means the page has not painted its chrome yet, full stop. That is a
+ *     render-timing gap, not a missing element, and the fix is to actually wait
+ *     for the page to settle rather than guess a fixed delay.
+ *
+ * The gap between "settled" (no pending network/DOM/spinner activity) and
+ * "visibly painted" varies by engine and by how CPU-bound an app's client-side
+ * render is — a heavier framework bundle can take meaningfully longer to paint
+ * on one browser engine than another even with identical network conditions.
+ * A 900ms guess that comfortably covers a fast engine can still be short for a
+ * slower one, so the empty-page case gets a real settle wait and headroom for
+ * more than one extra look, instead of a single fixed-size gamble.
+ */
+const EMPTY_PAGE_SETTLE_TIMEOUT_MS = 5_000;
+const EMPTY_PAGE_MAX_ATTEMPTS = 4;
 
 // Bare tag selectors resolve to "whatever happens to be first" — fine for the
 // click that just happened, useless in a generated regression script. When one
@@ -105,7 +129,12 @@ export function parsePositionHint(target: string): { cleaned: string; hint: Posi
 
 /** Thrown when no element can be confidently matched for a field name. */
 export class ElementNotFoundError extends Error {
-  constructor(public target: string, public bestScore: number) {
+  constructor(
+    public target: string,
+    public bestScore: number,
+    /** False when the whole pass found nothing visible at all — see EMPTY_PAGE_* above. */
+    public sawAnyVisibleElement: boolean = true,
+  ) {
     super(
       `Element not found for "${target}" (best confidence ${Math.max(0, Math.round(bestScore))}%, ` +
         `need ${MIN_CONFIDENCE}%). Rephrase the step or add an id / label / data-testid to the element.`,
@@ -148,15 +177,42 @@ export class ElementDiscoveryEngine implements IElementDiscoveryEngine {
    */
   public async discover(page: Page, fieldName: string): Promise<DiscoveryMatch> {
     let lastError: unknown;
+    let attempt = 0;
+    let maxAttempts = DISCOVERY_ATTEMPTS;
 
-    for (let attempt = 1; attempt <= DISCOVERY_ATTEMPTS; attempt++) {
+    while (attempt < maxAttempts) {
+      attempt++;
       try {
         return await this._discoverOnce(page, fieldName);
       } catch (err) {
         lastError = err;
-        if (!(err instanceof ElementNotFoundError) || attempt === DISCOVERY_ATTEMPTS) break;
-        dlog(`Attempt ${attempt} found nothing for "${fieldName}" — re-scanning shortly`);
-        await page.waitForTimeout(DISCOVERY_RETRY_DELAY_MS).catch(() => {});
+        if (!(err instanceof ElementNotFoundError)) break;
+
+        // A miss is not always "this field doesn't exist" — a widget whose
+        // content depends on its own request (an avatar waiting on a user-info
+        // call, say) can still be loading after the rest of the page's chrome
+        // is already up and idle. Nothing being visible ANYWHERE is the extreme
+        // case of that — the page has not painted at all — and buys extra
+        // attempts on top, since it may need more than one more look.
+        const pageBarelyRendered = !err.sawAnyVisibleElement;
+        if (pageBarelyRendered && maxAttempts < EMPTY_PAGE_MAX_ATTEMPTS) {
+          maxAttempts = EMPTY_PAGE_MAX_ATTEMPTS;
+        }
+
+        if (attempt === maxAttempts) break;
+
+        // Wait on a real settle signal rather than a fixed guess. On a page
+        // that is already genuinely idle this resolves faster than the old
+        // fixed delay; on one still doing work — including a single lazy
+        // widget still populating — it waits for a real signal instead of
+        // gambling on a fixed number.
+        const settleBudget = pageBarelyRendered ? EMPTY_PAGE_SETTLE_TIMEOUT_MS : DISCOVERY_RETRY_DELAY_MS;
+        dlog(
+          pageBarelyRendered
+            ? `Attempt ${attempt}: nothing visible at all for "${fieldName}" — waiting for the page to render`
+            : `Attempt ${attempt} found nothing for "${fieldName}" — waiting for the page to settle before re-scanning`,
+        );
+        await waitForPageSettle(page, { timeoutMs: settleBudget }).catch(() => {});
       }
     }
 
@@ -271,8 +327,13 @@ export class ElementDiscoveryEngine implements IElementDiscoveryEngine {
     }
 
     // Full DOM scan fallback — scores every interactive element in one evaluate().
+    // Every path that can still end in "not found" reaches this point, so
+    // whether it saw ANY visible interactive element at all — across a selector
+    // list broad enough to catch a real rendered page regardless of what field
+    // was being searched for — is the most reliable read of "did this page
+    // paint anything", independent of whether that something matched.
     dlog('No strategy hit confidence >= 50 — falling back to full DOM scan');
-    const domFallback = await this._fullDomScan(page, ctx);
+    const { match: domFallback, sawAnyVisible } = await this._fullDomScan(page, ctx);
     if (domFallback && domFallback.score > (bestMatch?.score || 0)) {
       bestMatch = domFallback;
       bestScore = domFallback.score;
@@ -285,7 +346,7 @@ export class ElementDiscoveryEngine implements IElementDiscoveryEngine {
       return await this._finalizeMatch(page, bestMatch);
     }
 
-    throw new ElementNotFoundError(rawTarget, bestScore);
+    throw new ElementNotFoundError(rawTarget, bestScore, sawAnyVisible);
   }
 
   /** Turns a raw winner into something safe to act on and to write into a script. */
@@ -427,7 +488,10 @@ export class ElementDiscoveryEngine implements IElementDiscoveryEngine {
   /**
    * Full DOM scan fallback — evaluates interactive elements and scores them using the advanced logic in Node.js
    */
-  private async _fullDomScan(page: Page, ctx: ScoringContext): Promise<DiscoveryMatch | null> {
+  private async _fullDomScan(
+    page: Page,
+    ctx: ScoringContext,
+  ): Promise<{ match: DiscoveryMatch | null; sawAnyVisible: boolean }> {
     try {
       await this._ensurePageHelpers(page);
       const elementList = await page.evaluate(() => {
@@ -568,9 +632,11 @@ export class ElementDiscoveryEngine implements IElementDiscoveryEngine {
 
       let bestMatch: DiscoveryMatch | null = null;
       let bestScore = -1;
+      let sawAnyVisible = false;
 
       for (const item of elementList) {
         if (!item.attrs.isVisible) continue;
+        sawAnyVisible = true;
         const { score, winningSignal } = scoreElement(item.attrs, ctx);
         if (score > bestScore) {
           bestScore = score;
@@ -584,10 +650,15 @@ export class ElementDiscoveryEngine implements IElementDiscoveryEngine {
         }
       }
 
-      return bestMatch;
+      return { match: bestMatch, sawAnyVisible };
     } catch (e) {
       dlog('Error during full DOM scan:', e);
-      return null;
+      // A scan that itself errored (e.g. a navigation tore down the execution
+      // context mid-evaluate) is not evidence either way — treat it as "did see
+      // something" so it falls back to the ordinary fixed-delay retry rather
+      // than the longer empty-page wait, which is reserved for a scan that
+      // genuinely completed and found nothing.
+      return { match: null, sawAnyVisible: true };
     }
   }
 

@@ -4,7 +4,7 @@ import fs from 'fs';
 import { logger } from '@/utils/logger';
 
 export interface IScreenshotManager {
-  capture(page: Page, runId: string, stepIndex: number): Promise<string>;
+  capture(page: Page, runId: string, stepIndex: number, opts?: { fullPage?: boolean }): Promise<string>;
 }
 
 export class ScreenshotManager implements IScreenshotManager {
@@ -18,14 +18,27 @@ export class ScreenshotManager implements IScreenshotManager {
     }
   }
 
-  public async capture(page: Page, runId: string, stepIndex: number): Promise<string> {
+  /**
+   * Captures the page.
+   *
+   * `fullPage` stitches the whole scrollable document together, which on a long
+   * dashboard means scrolling it end to end and costs seconds — per step. Passing
+   * evidence only needs to show what the tester would have been looking at, so
+   * successful steps capture the viewport and failures get the full page, where
+   * the off-screen part of the document is genuinely diagnostic.
+   */
+  public async capture(
+    page: Page,
+    runId: string,
+    stepIndex: number,
+    opts: { fullPage?: boolean } = {},
+  ): Promise<string> {
     try {
       const fileName = `run-${runId}-step-${stepIndex}.png`;
       const filePath = path.join(this.outputDir, fileName);
-      
-      // Capture full-page screenshot
-      await page.screenshot({ path: filePath, fullPage: true });
-      
+
+      await page.screenshot({ path: filePath, fullPage: opts.fullPage ?? false });
+
       logger.info(`Captured screenshot: ${fileName}`);
       
       // Return static route served by Next.js

@@ -38,6 +38,13 @@ export interface StepExecutionResult {
    * asked for /dashboard. Present only on such passes, so they stay visible.
    */
   assertionNote?: string;
+  /**
+   * The value the runner invented because the step named a field but no value
+   * ("Enter workpod name"). Recorded so the report states exactly what was
+   * typed: auto-supplied data that only exists inside the run is data the
+   * reader cannot reproduce or trust.
+   */
+  autoSuppliedValue?: string;
 }
 
 export interface ConsoleMessageRecord {

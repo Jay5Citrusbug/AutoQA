@@ -24,6 +24,7 @@ import {
   ParseResult,
 } from '@/utils/fileImportParser';
 import { ExecutionType } from '@/types/mvp';
+import { StepLintPanel, useStepLint } from '@/components/StepLintPanel';
 
 interface ImportFileModalProps {
   isOpen: boolean;
@@ -121,6 +122,16 @@ export function ImportFileModal({ isOpen, onClose, onImport }: ImportFileModalPr
     a.click();
     URL.revokeObjectURL(url);
   };
+
+  // Lint the whole uploaded file before anything is imported or run. A CSV is
+  // the one place a bad step is easiest to miss (nobody proofreads forty rows
+  // inside spreadsheet cells) and most expensive to discover late, since a bad
+  // step in row 12 would otherwise surface only after eleven rows have run.
+  const previewStepsText =
+    modalState === 'preview' && parseResult && parseResult.testCases.length > 0
+      ? testCasesToStepsText(parseResult.testCases)
+      : '';
+  const { report: lintReport, checking: lintChecking } = useStepLint(previewStepsText);
 
   const handleImportAndRun = async () => {
     if (!parseResult || parseResult.testCases.length === 0) return;
@@ -362,6 +373,13 @@ export function ImportFileModal({ isOpen, onClose, onImport }: ImportFileModalPr
                 </div>
               )}
 
+              {/* What the runner will make of every step in this file */}
+              {(lintReport || lintChecking) && (
+                <div className="bg-zinc-900/40 border border-zinc-800 rounded-xl px-4 py-3">
+                  <StepLintPanel report={lintReport} checking={lintChecking} />
+                </div>
+              )}
+
               {/* Preview table */}
               <div className="border border-zinc-800 rounded-xl overflow-hidden">
                 <div className="px-4 py-3 bg-zinc-900/60 border-b border-zinc-800 flex items-center gap-2">
@@ -484,13 +502,20 @@ export function ImportFileModal({ isOpen, onClose, onImport }: ImportFileModalPr
             {modalState === 'preview' && parseResult && parseResult.testCases.length > 0 && (
               <button
                 onClick={handleImportAndRun}
-                disabled={isSavingToRepository}
-                className="flex items-center gap-2 px-6 py-2.5 rounded-xl bg-blue-600 hover:bg-blue-500 disabled:opacity-60 disabled:cursor-wait text-white font-bold text-sm transition-all shadow-lg shadow-blue-500/20"
+                disabled={isSavingToRepository || (lintReport?.errorCount ?? 0) > 0}
+                title={
+                  (lintReport?.errorCount ?? 0) > 0
+                    ? 'Some steps in this file cannot be executed — fix them in the file and re-upload.'
+                    : undefined
+                }
+                className="flex items-center gap-2 px-6 py-2.5 rounded-xl bg-blue-600 hover:bg-blue-500 disabled:opacity-60 disabled:cursor-not-allowed text-white font-bold text-sm transition-all shadow-lg shadow-blue-500/20"
               >
                 <PlayCircle className="h-4.5 w-4.5" />
                 {isSavingToRepository
                   ? 'Saving to repository…'
-                  : `Import & Run ${parseResult.testCases.length} Test Case${parseResult.testCases.length !== 1 ? 's' : ''}`}
+                  : (lintReport?.errorCount ?? 0) > 0
+                    ? `${lintReport?.errorCount} step(s) must be fixed first`
+                    : `Import & Run ${parseResult.testCases.length} Test Case${parseResult.testCases.length !== 1 ? 's' : ''}`}
               </button>
             )}
           </div>

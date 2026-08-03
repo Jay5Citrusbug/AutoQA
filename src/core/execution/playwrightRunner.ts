@@ -8,8 +8,9 @@ import {
   ConsoleMessageRecord,
   NetworkErrorRecord,
   SessionReuseSummary,
+  DiscoveryMatch,
 } from '@/types/execution';
-import { ParsedStep } from '@/types/testCase';
+import { ActionType, ParsedStep } from '@/types/testCase';
 import { BrowserEngine, DeviceMode } from '@/types/mvp';
 import { TestCaseParser } from '../parser/testCaseParser';
 import { ElementDiscoveryEngine } from '../discovery/elementDiscovery';
@@ -25,7 +26,7 @@ import { v4 as uuidv4 } from 'uuid';
 import fs from 'fs';
 import path from 'path';
 import { fileHelper } from '@/utils/fileHelper';
-import { getCredentials, substituteVariables } from '@/utils/testData';
+import { generateAutoValue, getCredentials, substituteVariables } from '@/utils/testData';
 import { runRegistry } from './runRegistry';
 import { installNetworkActivityTracker, waitForPageSettle, waitUntilCondition } from './smartWait';
 import {
@@ -37,10 +38,196 @@ import {
   saveSession,
 } from './sessionManager';
 import { LoginPrologue, containsLogout, detectLoginPrologue, hasLoginSteps, shouldRetryAfterReuse } from './loginFlow';
-import type { Browser, BrowserContext, Page, Request } from '@playwright/test';
+import type { Browser, BrowserContext, Locator, Page, Request } from '@playwright/test';
 
 // Universal 30-second timeout applied to all network-dependent operations.
 const UNIVERSAL_TIMEOUT_MS = 30_000;
+
+/**
+ * How a navigation is considered "arrived".
+ *
+ * `load` waits for every subresource — images, fonts, ad pixels, analytics — long
+ * after the page is usable, and on a media-heavy dashboard that is several seconds
+ * per navigation with nothing gained. `domcontentloaded` plus waitForPageSettle()
+ * is strictly better information: the markup is parsed AND the app's own async
+ * work has gone quiet, which is what the next step actually depends on.
+ */
+const NAV_WAIT_UNTIL = 'domcontentloaded' as const;
+
+/**
+ * Settle budget for a confirmation read (is this page authenticated?) rather than
+ * an action. Nothing was just triggered, so there is nothing slow to wait for.
+ *
+ * Only for checks that follow a GET navigation to an already-authenticated page
+ * (restoring a cached session, or a suite's own opening navigation with cookies
+ * already in place) — there genuinely is nothing pending to wait for there.
+ */
+const CHECK_SETTLE_MS = 2_000;
+
+/**
+ * Settle budget for confirming a login that was just submitted.
+ *
+ * This follows a POST-and-redirect, not a plain GET, and measurement against the
+ * real target app showed why that matters: the gap between click and redirect
+ * varied from ~5s to ~26s across otherwise-identical runs — backend/network
+ * variance on the app's own staging environment, reproducible on EITHER browser
+ * engine, not a rendering-engine difference. A tight budget here doesn't fail
+ * safely on a slow response, it fails INCORRECTLY: it reports "login didn't
+ * work" for a login that was simply still in flight.
+ *
+ * Getting this wrong is expensive precisely because it is rare and high-stakes —
+ * it runs once per login flow, not once per step, and a false "not logged in"
+ * here silently drops every suite that would have shared this session back to
+ * logging in individually — which is a correctness risk, not just a speed one,
+ * for any suite that has no login steps of its own to fall back on (it has
+ * nothing to replay, so it runs logged out instead). That asymmetry — cheap to
+ * wait longer, expensive to misjudge — is why this budget is generous rather
+ * than tuned to the common case.
+ */
+const LOGIN_CONFIRM_SETTLE_MS = 30_000;
+
+/** True when a step's whole job is to put the browser on a page. */
+function isNavigationStep(step: ParsedStep | undefined): boolean {
+  return !!step && step.type === 'action' && step.action === 'navigate';
+}
+
+/**
+ * Navigation errors that mean "this load was replaced by another one", not
+ * "this navigation failed".
+ *
+ * When a single-page app's router redirects during the initial document load,
+ * the browser cancels the in-flight request — and each engine reports that
+ * cancellation with its own wording. Firefox raises NS_BINDING_ABORTED, which
+ * surfaces as a hard step failure even though the browser genuinely arrived
+ * where it was sent; Chromium and WebKit mostly absorb the same situation
+ * silently, which is exactly why an app can pass on one engine and fail on
+ * another with nothing actually different about the application.
+ *
+ * Recognising these is not the same as ignoring them: the caller still has to
+ * confirm the page really landed somewhere before carrying on (see `navigateTo`).
+ */
+const SUPERSEDED_NAVIGATION_PATTERNS = [
+  'NS_BINDING_ABORTED',
+  'net::ERR_ABORTED',
+  'Navigation interrupted by another one',
+  'frame was detached',
+];
+
+function isSupersededNavigation(err: unknown): boolean {
+  const message = err instanceof Error ? err.message : String(err);
+  return SUPERSEDED_NAVIGATION_PATTERNS.some((p) => message.includes(p));
+}
+
+/**
+ * Navigates, tolerating a load that a client-side redirect cancelled.
+ *
+ * A cancelled navigation is only accepted when the browser actually ended up on
+ * a real page — never blank, never still sitting on the URL it started from with
+ * nothing loaded. Anything else is re-thrown so a genuinely broken navigation
+ * still fails the step, loudly, the way it should.
+ */
+async function navigateTo(
+  page: Page,
+  targetUrl: string,
+  onNote: (msg: string) => void,
+): Promise<void> {
+  const from = page.url();
+  try {
+    await page.goto(targetUrl, { waitUntil: NAV_WAIT_UNTIL, timeout: UNIVERSAL_TIMEOUT_MS });
+  } catch (err) {
+    if (!isSupersededNavigation(err)) throw err;
+
+    // Give the redirect that cancelled us a moment to arrive somewhere.
+    await waitForPageSettle(page, { timeoutMs: CHECK_SETTLE_MS });
+    const landed = page.url();
+    const wentNowhere = !landed || landed === 'about:blank' || landed === from;
+    if (wentNowhere) throw err;
+
+    onNote(
+      `Initial load was superseded by the application's own redirect ` +
+        `(${err instanceof Error ? err.message.split('\n')[0] : 'navigation aborted'}) — ` +
+        `the browser did arrive, now at ${landed}.`,
+    );
+  }
+}
+
+/**
+ * The leading entry of a dropdown is usually an instruction, not a choice
+ * ("Select visibility", "What's this WorkPod for?", "-- none --"). Picking it
+ * leaves the form untouched while reporting success, which is worse than
+ * failing.
+ */
+const PLACEHOLDER_OPTION =
+  /^(?:\s*(?:--+|—)?\s*)(?:select|choose|pick|please\s+select|none|any|all|what'?s|-{2,})\b|^\s*-{2,}\s*$/i;
+
+/**
+ * How an opened dropdown's options are rendered, across the frameworks a QA
+ * team actually meets: ARIA-correct listboxes, Angular Material, the Angular
+ * `ng-select` widget, MUI, Ant Design, Bootstrap, and plain `<li>` lists.
+ */
+const CUSTOM_OPTION_SELECTOR = [
+  '[role="option"]',
+  '[role="listbox"] li',
+  '[role="menu"] [role="menuitem"]',
+  'mat-option',
+  '.mat-option',
+  '.ng-option',
+  '.ant-select-item-option',
+  '.MuiMenuItem-root',
+  '.MuiAutocomplete-option',
+  '.dropdown-menu li',
+  '.dropdown-menu .dropdown-item',
+  '.select2-results__option',
+  '.choices__item--choice',
+].join(', ');
+
+/** Human-readable name for what a resolved element turned out to be. */
+function describeShape(tag: string, type: string, role: string): string {
+  if (tag === 'select') return 'dropdown';
+  if (type === 'checkbox' || role === 'checkbox') return 'checkbox';
+  if (type === 'radio' || role === 'radio') return 'radio button';
+  if (tag === 'textarea') return 'text area';
+  if (tag === 'input') return `${type || 'text'} input`;
+  if (role === 'combobox' || role === 'listbox') return 'dropdown';
+  if (tag === 'button' || role === 'button') return 'button';
+  if (tag === 'a') return 'link';
+  return tag || 'element';
+}
+
+/** Longest a browser/context is given to close before it is abandoned. */
+const CLOSE_TIMEOUT_MS = 10_000;
+
+/**
+ * Closes a Browser or BrowserContext without letting a hung shutdown hang the
+ * whole run with it.
+ *
+ * `.close().catch(() => {})` only guards against a *rejected* close — it does
+ * nothing if close() simply never resolves, which every engine can do on an
+ * unlucky run (observed in practice with WebKit's network process on this
+ * platform). Racing a timeout against it means a stuck close leaks one OS
+ * process instead of hanging the HTTP request that the user is waiting on.
+ */
+async function closeWithTimeout(target: { close: () => Promise<void> }): Promise<void> {
+  await Promise.race([
+    target.close().catch(() => {}),
+    new Promise<void>((resolve) => setTimeout(resolve, CLOSE_TIMEOUT_MS)),
+  ]);
+}
+
+/** What evidence to capture for each step. Mirrors the Settings page options. */
+type ScreenshotPolicy = 'all' | 'on-failure' | 'off';
+
+function resolveScreenshotPolicy(
+  config: RunConfig | undefined,
+  settings: { screenshotCapture?: string } | undefined,
+): ScreenshotPolicy {
+  // An explicit `captureScreenshots: false` from the run request always wins.
+  if (config?.captureScreenshots === false) return 'off';
+
+  const configured = settings?.screenshotCapture;
+  if (configured === 'off' || configured === 'on-failure' || configured === 'all') return configured;
+  return 'all';
+}
 
 /**
  * How many suites in a run may be re-run with a real login after failing on a
@@ -149,6 +336,18 @@ interface SuiteSessionPlan {
   loginFlow: LoginPrologue;
 }
 
+/**
+ * A login-less suite that got no plan because the upfront shared login attempt
+ * failed — but a login suite in the same run (sequentially earlier) still might
+ * succeed on its own and cache a session before this suite's turn comes. Worth
+ * one fresh look at the cache right before running, instead of accepting
+ * upfront planning as final and running logged out on a fixable technicality.
+ */
+interface HopefulSessionKey {
+  key: string;
+  loginFlow: LoginPrologue;
+}
+
 export interface IPlaywrightRunner {
   run(
     url: string,
@@ -230,9 +429,21 @@ export class PlaywrightRunner implements IPlaywrightRunner {
     const activeRun = runRegistry.start(runId);
     activeRun.aborted = preAborted;
 
+    // State the evidence policy up front. It is driven by the Settings page, and a
+    // report with no per-step screenshots should never leave the reader guessing
+    // whether that was a setting or a fault.
+    const screenshotPolicy = resolveScreenshotPolicy(config, fileHelper.getSettings());
+    const screenshotNote =
+      screenshotPolicy === 'all'
+        ? 'every step'
+        : screenshotPolicy === 'on-failure'
+          ? 'failures only (Settings → Screenshot Capture Mode)'
+          : 'disabled';
+
     runRegistry.initLogs(runId, [
       `[${new Date().toLocaleTimeString()}] [SYSTEM] Run ${runId} started (node ${process.version})`,
       `[${new Date().toLocaleTimeString()}] [SYSTEM] Suites: ${suites.length} | Browser: ${browser} | Device: ${deviceMode} | Workers: ${maxWorkers}`,
+      `[${new Date().toLocaleTimeString()}] [SYSTEM] Screenshots: ${screenshotNote}`,
     ]);
 
     logger.info(
@@ -256,7 +467,7 @@ export class PlaywrightRunner implements IPlaywrightRunner {
     };
 
     // ---- Plan login-session reuse before any suite runs ----
-    const { plans, captureKeys, summary } = await this._planSessionReuse(
+    const { plans, captureKeys, hopefulKeys, summary } = await this._planSessionReuse(
       url,
       suites,
       runId,
@@ -279,18 +490,19 @@ export class PlaywrightRunner implements IPlaywrightRunner {
     }
 
     // ---- Run suites in batches controlled by maxWorkers ----
+    const batches = this._planBatches(ordered, maxWorkers);
     const indexed: { result: TestSuiteResult; index: number }[] = [];
     let reuseRetriesLeft = REUSE_RETRY_BUDGET;
 
     try {
-      for (let i = 0; i < ordered.length; i += maxWorkers) {
-        const batch = ordered.slice(i, i + maxWorkers);
+      for (const batch of batches) {
 
         const batchResults = await Promise.all(
           batch.map(async ({ suite, index }) => {
             let result = await this._executeSuite(suite, url, runId, browser, deviceMode, config, {
               plan: plans.get(suite.id),
               captureKey: captureKeys.get(suite.id),
+              hopefulKey: hopefulKeys.get(suite.id),
             });
 
             // Self-healing: a suite that started from a cached session and failed
@@ -451,6 +663,38 @@ export class PlaywrightRunner implements IPlaywrightRunner {
     return context;
   }
 
+  /**
+   * Groups the ordered suites into batches that run concurrently.
+   *
+   * Ordering already puts logout suites last, but ordering alone is not enough
+   * once more than one worker is in play: with `maxWorkers` 2 the last ordinary
+   * suite and the logout suite land in the same batch and run side by side, and
+   * the logout kills the shared token underneath the suite still using it. So a
+   * logout suite always gets a batch to itself — the barrier the ordering was
+   * there to create, actually enforced. Parallelism is then safe to turn up.
+   */
+  private _planBatches<T extends { logsOut: boolean }>(ordered: T[], maxWorkers: number): T[][] {
+    const batches: T[][] = [];
+    let current: T[] = [];
+
+    for (const item of ordered) {
+      if (item.logsOut) {
+        if (current.length > 0) batches.push(current);
+        current = [];
+        batches.push([item]);
+        continue;
+      }
+      current.push(item);
+      if (current.length === maxWorkers) {
+        batches.push(current);
+        current = [];
+      }
+    }
+
+    if (current.length > 0) batches.push(current);
+    return batches;
+  }
+
   // -----------------------------------------------------------------------
   // PRIVATE: _planSessionReuse() — decides which suites can skip their login
   //
@@ -476,6 +720,7 @@ export class PlaywrightRunner implements IPlaywrightRunner {
   ): Promise<{
     plans: Map<string, SuiteSessionPlan>;
     captureKeys: Map<string, string>;
+    hopefulKeys: Map<string, HopefulSessionKey>;
     summary: SessionReuseSummary & { perLoginMs: number };
   }> {
     const settings = fileHelper.getSettings();
@@ -485,6 +730,7 @@ export class PlaywrightRunner implements IPlaywrightRunner {
 
     const plans = new Map<string, SuiteSessionPlan>();
     const captureKeys = new Map<string, string>();
+    const hopefulKeys = new Map<string, HopefulSessionKey>();
     const summary = {
       enabled,
       primedLogins: 0,
@@ -494,7 +740,7 @@ export class PlaywrightRunner implements IPlaywrightRunner {
       perLoginMs: 0,
     };
 
-    if (!enabled) return { plans, captureKeys, summary };
+    if (!enabled) return { plans, captureKeys, hopefulKeys, summary };
 
     // ---- Classify every suite ----
     // Each suite keeps its OWN steps: suites in a group log in the same way, but
@@ -543,7 +789,7 @@ export class PlaywrightRunner implements IPlaywrightRunner {
           `[${new Date().toLocaleTimeString()}] [SESSION] ${loginlessSuiteIds.join(', ')} need an authenticated browser but no test case in this module performs a successful login — add a login test case to enable reuse.`,
         );
       }
-      return { plans, captureKeys, summary };
+      return { plans, captureKeys, hopefulKeys, summary };
     }
 
     // Login-less suites ride along with the first login flow that actually yields a
@@ -572,8 +818,13 @@ export class PlaywrightRunner implements IPlaywrightRunner {
 
       if (!session) {
         // Priming failed — these suites log in themselves, and any login-less suite
-        // stays pending so the next flow can pick it up.
+        // stays pending so the next flow can pick it up. It also gets a hopeful
+        // key: if one of those login suites succeeds on its own later in this
+        // same run, this suite gets one fresh look at the cache right before it
+        // executes, rather than being stranded on a failure that already resolved
+        // itself by the time its turn came.
         group.suiteIds.forEach((id) => captureKeys.set(id, key));
+        pendingLoginless.forEach((id) => hopefulKeys.set(id, { key, loginFlow: group.prologue }));
         continue;
       }
 
@@ -597,7 +848,7 @@ export class PlaywrightRunner implements IPlaywrightRunner {
       }
     }
 
-    return { plans, captureKeys, summary };
+    return { plans, captureKeys, hopefulKeys, summary };
   }
 
   // -----------------------------------------------------------------------
@@ -658,7 +909,7 @@ export class PlaywrightRunner implements IPlaywrightRunner {
         return null;
       }
 
-      const auth = await this._looksAuthenticated(page);
+      const auth = await this._looksAuthenticated(page, LOGIN_CONFIRM_SETTLE_MS);
       if (!auth.ok) {
         pushRealTimeLog(`Shared login could not be confirmed (${auth.reason}) — each test case will log in itself.`);
         return null;
@@ -688,7 +939,7 @@ export class PlaywrightRunner implements IPlaywrightRunner {
       return null;
     } finally {
       // Only the priming context goes away; the browser process stays up for the suites.
-      if (browserContext) await browserContext.close().catch(() => {});
+      if (browserContext) await closeWithTimeout(browserContext);
     }
   }
 
@@ -754,7 +1005,313 @@ export class PlaywrightRunner implements IPlaywrightRunner {
     const browser = this.sharedBrowser;
     this.sharedBrowser = undefined;
     this.sharedBrowserLaunch = undefined;
-    if (browser) await browser.close().catch(() => {});
+    if (browser) await closeWithTimeout(browser);
+  }
+
+  /**
+   * Decides how to actually operate a resolved element, regardless of the verb
+   * the step happened to use.
+   *
+   * A test author writing "Enter workpod name" and "Select visibility" is naming
+   * the same thing both times — the control they want to set — and the choice of
+   * word carries no information the runner needs. What decides the correct
+   * interaction is the ELEMENT: you type into a text input, choose from a
+   * listbox, toggle a checkbox, click a button. Insisting the author's verb
+   * match the widget makes the tool fail for a reason that has nothing to do
+   * with the application under test, which is the definition of an automation
+   * gap rather than a defect.
+   *
+   * Every adaptation is logged, because "the step said fill and I clicked
+   * instead" is exactly the kind of helpfulness that must not be silent.
+   */
+  private async _interact(
+    page: Page,
+    match: DiscoveryMatch,
+    step: ParsedStep,
+    requestedValue: string | undefined,
+    log: (msg: string) => void,
+  ): Promise<{ performed: ActionType; usedValue?: string }> {
+    let locator = page.locator(match.selector).first();
+
+    // A form's visible text is its <label>, so a search for "Intent" very often
+    // lands on the label rather than the control it names. Acting on the label
+    // is never what was meant — clicking one does nothing useful and, worse,
+    // succeeds. Hop to the control the label points at.
+    const labelTarget = await locator
+      .evaluate((el) => {
+        if (el.tagName.toLowerCase() !== 'label') return null;
+        // Broad on purpose. A "dropdown" in the wild is rarely a <select>: it is
+        // an anchor with data-bs-toggle, an ng-select, a mat-select, or a custom
+        // element wrapping one of those. Missing the control and staying on the
+        // label is how a step ends up clicking a caption and reporting success.
+        const CONTROL =
+          'input, select, textarea, [role="combobox"], [role="listbox"], [data-bs-toggle="dropdown"], ' +
+          '[aria-haspopup], .ng-select, .mat-select, .ant-select, .form-control-select, ' +
+          'app-dropdown a[role="button"], .dropdown > a[role="button"], .dropdown > button';
+        const forId = el.getAttribute('for');
+        const byFor = forId ? document.getElementById(forId) : null;
+        const inside = el.querySelector(CONTROL);
+        // The label and its control are siblings inside a form group.
+        const after = el.parentElement?.querySelector(CONTROL);
+        const control = byFor ?? inside ?? after;
+        if (!control) return null;
+        const w = window as unknown as { __autoqaUniqueSelector?: (e: Element) => string };
+        return w.__autoqaUniqueSelector ? w.__autoqaUniqueSelector(control) : null;
+      })
+      .catch(() => null);
+
+    if (labelTarget) {
+      log(`«${step.targetField}» resolved to a label — using the control it labels ("${labelTarget}") instead.`);
+      locator = page.locator(labelTarget).first();
+    }
+
+    const shape = await locator
+      .evaluate((el) => {
+        const tag = el.tagName.toLowerCase();
+        const input = el as HTMLInputElement;
+        const type = (el.getAttribute('type') || '').toLowerCase();
+        const role = (el.getAttribute('role') || '').toLowerCase();
+        return {
+          tag,
+          type,
+          role,
+          checked: tag === 'input' ? !!input.checked : false,
+          editable: (el as HTMLElement).isContentEditable === true,
+          hasPopup: el.hasAttribute('aria-haspopup') || el.hasAttribute('aria-expanded'),
+          disabled: (el as HTMLInputElement).disabled === true,
+        };
+      })
+      .catch(() => null);
+
+    // Element could not be inspected (detached mid-step) — fall back to the
+    // author's verb rather than guessing from nothing.
+    const tag = shape?.tag ?? '';
+    const type = shape?.type ?? '';
+    const role = shape?.role ?? '';
+
+    const isNativeSelect = tag === 'select';
+    const isCheckbox = type === 'checkbox' || role === 'checkbox';
+    const isRadio = type === 'radio' || role === 'radio';
+    const isTextEntry =
+      tag === 'textarea' ||
+      shape?.editable === true ||
+      (tag === 'input' &&
+        !['checkbox', 'radio', 'button', 'submit', 'reset', 'file', 'image'].includes(type)) ||
+      role === 'textbox';
+    // Whether this *could* behave like a custom dropdown. Deliberately not
+    // enough on its own to trigger option-picking — see the guard below.
+    const dropdownLike =
+      !isNativeSelect &&
+      (role === 'combobox' || role === 'listbox' || (shape?.hasPopup === true && !isTextEntry));
+
+    const requested = step.action ?? 'click';
+    const note = (performed: string) => {
+      if (performed !== requested) {
+        log(
+          `Step says "${requested}" but «${step.targetField}» is a ${describeShape(tag, type, role)} — ` +
+            `performing ${performed} instead (the element decides, not the wording).`,
+        );
+      }
+    };
+
+    // ---- Native <select> ----
+    if (isNativeSelect) {
+      note('select');
+      const chosen = await this._chooseNativeOption(locator, step, requestedValue, log);
+      return { performed: 'select', usedValue: chosen };
+    }
+
+    // ---- Custom dropdown (Angular/React/MUI/Ant — a div that behaves like a select) ----
+    //
+    // Only when the step actually asked to SELECT. A step that says "click" gets
+    // a click, even on a control that looks dropdown-ish, and this is not a
+    // detail: a profile avatar carries aria-haspopup exactly like a dropdown
+    // does, so treating "click the JR icon" as a select would open the menu and
+    // then pick an item out of it — logging the user out in the middle of a test
+    // about something else entirely. "Click" means click.
+    if (requested === 'select' && !isTextEntry && !isCheckbox && !isRadio) {
+      if (!dropdownLike) {
+        log(`«${step.targetField}» is a ${describeShape(tag, type, role)} rather than a labelled dropdown — trying it as one anyway.`);
+      }
+      note('select');
+      const chosen = await this._chooseCustomOption(page, locator, step, requestedValue, log);
+      if (chosen !== null) return { performed: 'select', usedValue: chosen };
+
+      // Nothing selectable ever appeared. Degrading to a plain click here would
+      // be the worst possible outcome: the step passes, the report says the
+      // dropdown was set, and the field is actually still empty — so a later
+      // "Create" fails validation for a reason nothing in the run explains. A
+      // select that selected nothing did not happen, and has to say so.
+      throw new Error(
+        `Could not choose a value in «${step.targetField}»: clicking it opened no list of options ` +
+          `(looked for ${'role="option"'}, menu items and the usual framework option classes). ` +
+          `If this control is not a dropdown, write the step as \`click "${step.targetField}"\`; ` +
+          `if it is, the options never rendered.`,
+      );
+    }
+
+    // ---- Checkbox / radio ----
+    if (isCheckbox || isRadio) {
+      const wantOff = requested === 'uncheck';
+      note(wantOff ? 'uncheck' : 'check');
+      if (isRadio || !wantOff) await locator.check({ timeout: 15_000 });
+      else await locator.uncheck({ timeout: 15_000 });
+      return { performed: wantOff ? 'uncheck' : 'check' };
+    }
+
+    // ---- Text entry ----
+    if (isTextEntry) {
+      note('fill');
+      const value = requestedValue ?? '';
+      await locator.fill(value, { timeout: 15_000 });
+      return { performed: 'fill', usedValue: value };
+    }
+
+    // ---- Anything else is a click target ----
+    note('click');
+    await locator.click({ timeout: 15_000 });
+    return { performed: 'click' };
+  }
+
+  /** Picks an option from a real <select>, honouring a named one when given. */
+  private async _chooseNativeOption(
+    locator: Locator,
+    step: ParsedStep,
+    requestedValue: string | undefined,
+    log: (msg: string) => void,
+  ): Promise<string | undefined> {
+    const options = await locator
+      .evaluate((el) =>
+        el instanceof HTMLSelectElement
+          ? Array.from(el.options).map((o) => ({
+              value: o.value,
+              label: (o.textContent || '').trim(),
+              disabled: o.disabled,
+            }))
+          : [],
+      )
+      .catch(() => [] as { value: string; label: string; disabled: boolean }[]);
+
+    const selectable = options.filter(
+      (o) => !o.disabled && o.value !== '' && !PLACEHOLDER_OPTION.test(o.label),
+    );
+
+    if (requestedValue) {
+      const wanted = requestedValue.trim().toLowerCase();
+      const exact = selectable.find(
+        (o) => o.label.toLowerCase() === wanted || o.value.toLowerCase() === wanted,
+      );
+      const loose = selectable.find((o) => o.label.toLowerCase().includes(wanted));
+      const hit = exact ?? loose;
+      if (hit) {
+        await locator.selectOption(hit.value);
+        if (!exact) log(`No option exactly matched "${requestedValue}" — chose the closest, "${hit.label}".`);
+        return hit.label || hit.value;
+      }
+      // The named option does not exist. That is a claim about the application,
+      // not about wording, so it is allowed to fail.
+      throw new Error(
+        `Option "${requestedValue}" is not available in «${step.targetField}». ` +
+          `Available: ${selectable.map((o) => o.label || o.value).join(', ') || '(none)'}.`,
+      );
+    }
+
+    if (selectable.length === 0) {
+      throw new Error(
+        `«${step.targetField}» has no selectable option to choose ` +
+          `(${options.length} found, all blank, disabled or placeholders).`,
+      );
+    }
+    const pick = selectable[0];
+    await locator.selectOption(pick.value);
+    log(`No option was named — selected "${pick.label || pick.value}" from «${step.targetField}».`);
+    return pick.label || pick.value;
+  }
+
+  /**
+   * Operates a dropdown that is not a `<select>` — the common case in Angular,
+   * React, MUI and Ant Design, where the control is a div and the options only
+   * exist in the DOM once it has been opened.
+   *
+   * Returns null when nothing dropdown-like appeared, so the caller can fall
+   * back to treating the element as an ordinary control.
+   */
+  private async _chooseCustomOption(
+    page: Page,
+    trigger: Locator,
+    step: ParsedStep,
+    requestedValue: string | undefined,
+    log: (msg: string) => void,
+  ): Promise<string | null> {
+    await trigger.click({ timeout: 15_000 }).catch(() => {});
+    await waitForPageSettle(page, { timeoutMs: 2_000 });
+
+    const optionLocator = page.locator(CUSTOM_OPTION_SELECTOR);
+    // The list is rendered on open, so give it a beat to appear before deciding
+    // this was never a dropdown at all.
+    await optionLocator.first().waitFor({ state: 'visible', timeout: 2_500 }).catch(() => {});
+
+    const options = await optionLocator
+      .evaluateAll((els) =>
+        els
+          .map((el, index) => {
+            const rect = el.getBoundingClientRect();
+            const style = window.getComputedStyle(el);
+            return {
+              index,
+              label: ((el as HTMLElement).innerText || el.textContent || '').replace(/\s+/g, ' ').trim(),
+              visible:
+                rect.width > 0 &&
+                rect.height > 0 &&
+                style.display !== 'none' &&
+                style.visibility !== 'hidden',
+              disabled:
+                el.getAttribute('aria-disabled') === 'true' ||
+                el.classList.contains('disabled') ||
+                (el as HTMLButtonElement).disabled === true,
+            };
+          })
+          .filter((o) => o.visible && !o.disabled && o.label.length > 0),
+      )
+      .catch(() => [] as { index: number; label: string; visible: boolean; disabled: boolean }[]);
+
+    const usable = options.filter((o) => !PLACEHOLDER_OPTION.test(o.label));
+    if (usable.length === 0) {
+      // Close whatever may have opened so the next step starts clean.
+      await page.keyboard.press('Escape').catch(() => {});
+      return null;
+    }
+
+    let pick = usable[0];
+    if (requestedValue) {
+      const wanted = requestedValue.trim().toLowerCase();
+      const exact = usable.find((o) => o.label.toLowerCase() === wanted);
+      const loose = usable.find((o) => o.label.toLowerCase().includes(wanted));
+      const hit = exact ?? loose;
+      if (!hit) {
+        await page.keyboard.press('Escape').catch(() => {});
+        throw new Error(
+          `Option "${requestedValue}" is not available in «${step.targetField}». ` +
+            `Available: ${usable.slice(0, 12).map((o) => o.label).join(', ')}.`,
+        );
+      }
+      if (!exact) log(`No option exactly matched "${requestedValue}" — chose the closest, "${hit.label}".`);
+      pick = hit;
+    } else {
+      log(`No option was named — selected "${pick.label}" from the «${step.targetField}» dropdown.`);
+    }
+
+    // The clickable node is often an <a> inside the <li>, and the framework's
+    // handler is bound to it rather than to the list item — clicking the wrapper
+    // can land on padding and quietly do nothing.
+    const chosen = optionLocator.nth(pick.index);
+    const inner = chosen.locator('a, button, [role="option"]').first();
+    if ((await inner.count().catch(() => 0)) > 0) {
+      await inner.click({ timeout: 10_000 });
+    } else {
+      await chosen.click({ timeout: 10_000 });
+    }
+    return pick.label;
   }
 
   /**
@@ -762,15 +1319,18 @@ export class PlaywrightRunner implements IPlaywrightRunner {
    * login and after restoring a cached session, so a stale or revoked session
    * can never be silently reused.
    */
-  private async _looksAuthenticated(page: Page): Promise<{ ok: boolean; reason: string }> {
+  private async _looksAuthenticated(
+    page: Page,
+    settleMs: number = CHECK_SETTLE_MS,
+  ): Promise<{ ok: boolean; reason: string }> {
     try {
-      await waitForPageSettle(page, { timeoutMs: 5_000 });
+      await waitForPageSettle(page, { timeoutMs: settleMs });
 
       // A visible password field means we are looking at a login form.
       const passwordVisible = await page
         .locator('input[type="password"]')
         .first()
-        .isVisible({ timeout: 1_500 })
+        .isVisible({ timeout: 500 })
         .catch(() => false);
       if (passwordVisible) return { ok: false, reason: 'a login form is still displayed' };
 
@@ -818,7 +1378,7 @@ export class PlaywrightRunner implements IPlaywrightRunner {
 
     if (results.some((r) => r.status !== 'passed')) return false;
 
-    const auth = await this._looksAuthenticated(page);
+    const auth = await this._looksAuthenticated(page, LOGIN_CONFIRM_SETTLE_MS);
     if (!auth.ok) return false;
 
     // Share what this login produced with the suites still to run.
@@ -877,6 +1437,8 @@ export class PlaywrightRunner implements IPlaywrightRunner {
       captureKey?: string;
       /** Retry path: log in inline instead of restoring the (unusable) cached session. */
       reprime?: boolean;
+      /** Set when planning found no session but a login suite might still produce one before this suite's turn comes. */
+      hopefulKey?: HopefulSessionKey;
     },
   ): Promise<TestSuiteResult> {
     const suiteStart = Date.now();
@@ -917,7 +1479,7 @@ export class PlaywrightRunner implements IPlaywrightRunner {
 
       // If the run was cancelled before/while launching, bail out immediately.
       if (runRegistry.isAborted(runId)) {
-        if (ownsBrowser) await browser.close().catch(() => {});
+        if (ownsBrowser) await closeWithTimeout(browser);
         throw new Error('Execution cancelled by user before browser started.');
       }
 
@@ -974,6 +1536,31 @@ export class PlaywrightRunner implements IPlaywrightRunner {
       let stepsToRun = suite.steps;
       let plan = session?.plan;
 
+      // Planning found nothing for this suite when the shared login attempt
+      // failed, but a login suite scheduled ahead of it may have logged in on
+      // its own since then and cached a session — take one fresh look before
+      // accepting "runs logged out" as final. Cheap when there is nothing
+      // there (a single cache read), and the difference between correctly
+      // passing and failing on a technicality when there is.
+      if (!plan && session?.hopefulKey) {
+        const settingsForTtl = fileHelper.getSettings();
+        const ttlMinutes =
+          config?.sessionTtlMinutes ?? settingsForTtl.sessionTtlMinutes ?? DEFAULT_SESSION_TTL_MINUTES;
+        const fresh = loadSession(session.hopefulKey.key, ttlMinutes);
+        if (fresh) {
+          pushRealTimeLog(
+            `A login established earlier in this run is now available — restoring it instead of running logged out...`,
+          );
+          plan = {
+            key: session.hopefulKey.key,
+            session: fresh,
+            skip: [],
+            run: suite.steps,
+            loginFlow: session.hopefulKey.loginFlow,
+          };
+        }
+      }
+
       // Retry path for a suite with no login steps of its own: the cached session
       // proved unusable, so log in inside this suite's own context instead of
       // restoring state. The login steps are not added to the test case's results —
@@ -991,14 +1578,23 @@ export class PlaywrightRunner implements IPlaywrightRunner {
         }
       }
 
-      if (plan) {
+      // A login-less test case that opens by navigating somewhere would otherwise
+      // load the application twice: once to prove the restored session works, and
+      // again as its own first step. On a heavy dashboard that is several seconds
+      // of pure duplication per test case. Let the test's own navigation serve
+      // both purposes — the session is verified just as strictly, only on the page
+      // the test actually cares about instead of a throwaway one.
+      const deferAuthToFirstStep =
+        !!plan && plan.skip.length === 0 && isNavigationStep(stepsToRun[0]);
+
+      if (plan && !deferAuthToFirstStep) {
         pushRealTimeLog(
           plan.skip.length > 0
             ? `Restoring cached login session — skipping ${plan.skip.length} login step(s)...`
             : `Restoring cached login session — this test case starts already logged in...`,
         );
         await page
-          .goto(plan.session.landingUrl, { waitUntil: 'load', timeout: UNIVERSAL_TIMEOUT_MS })
+          .goto(plan.session.landingUrl, { waitUntil: NAV_WAIT_UNTIL, timeout: UNIVERSAL_TIMEOUT_MS })
           .catch(() => {});
 
         const auth = await this._looksAuthenticated(page);
@@ -1031,17 +1627,70 @@ export class PlaywrightRunner implements IPlaywrightRunner {
         }
       }
 
-      const executed = await this._executeSteps({
-        page,
-        steps: stepsToRun,
-        suiteId: suite.id,
-        runId,
-        url,
-        isHeadless,
-        config,
-        evidencePrefix: `${runId}-${suite.id}`,
-        pushRealTimeLog,
-      });
+      const activePage = page;
+      const runSteps = (steps: ParsedStep[]) =>
+        this._executeSteps({
+          page: activePage,
+          steps,
+          suiteId: suite.id,
+          runId,
+          url,
+          isHeadless,
+          config,
+          evidencePrefix: `${runId}-${suite.id}`,
+          pushRealTimeLog,
+        });
+
+      let executed: StepExecutionResult[];
+
+      if (plan && deferAuthToFirstStep) {
+        pushRealTimeLog(
+          `Restoring cached login session — this test case starts already logged in ` +
+            `(the session is verified on its own first navigation).`,
+        );
+
+        const opening = await runSteps([stepsToRun[0]]);
+        executed = [...opening];
+
+        if (opening.every((r) => r.status === 'passed')) {
+          const auth = await this._looksAuthenticated(page);
+          if (auth.ok) {
+            sessionReused = true;
+            pushRealTimeLog(`Cached session accepted — resumed at ${page.url()}`);
+          } else {
+            // Same recovery as the eager path: the cache is dead, so log in for
+            // real. The opening step is then replayed, so what the report shows
+            // for it is the authenticated page the rest of the test case runs on.
+            invalidateSession(plan.key);
+            pushRealTimeLog(`Cached session rejected (${auth.reason}) — logging in directly for this test case.`);
+            const loggedIn = await this._loginInline(page, plan, url, runId, isHeadless, config, pushRealTimeLog);
+            if (loggedIn) {
+              executed = await runSteps([stepsToRun[0]]);
+            } else {
+              pushRealTimeLog(`Could not establish a session — this test case runs logged out.`);
+            }
+          }
+        }
+
+        // A failed opening step means the rest never ran — record them as skipped
+        // rather than executing them against a page that never arrived.
+        const remaining = stepsToRun.slice(1);
+        executed = [
+          ...executed,
+          ...(executed.some((r) => r.status === 'failed')
+            ? remaining.map((step) => ({
+                stepIndex: step.stepIndex,
+                step,
+                status: 'skipped' as const,
+                durationMs: 0,
+                logs: [`Skipping step: ${step.rawText}`],
+              }))
+            : await runSteps(remaining)),
+        ];
+      } else {
+        executed = await runSteps(stepsToRun);
+      }
+
       stepResults = [...stepResults, ...executed];
 
       // Cache this suite's authenticated state for later runs (single-suite login
@@ -1105,8 +1754,8 @@ export class PlaywrightRunner implements IPlaywrightRunner {
       }
       // Close this suite's context. The browser process itself is closed once at the
       // end of the run when it is shared across test cases.
-      if (browserContext) await browserContext.close().catch(() => {});
-      if (browser && ownsBrowser) await browser.close().catch(() => {});
+      if (browserContext) await closeWithTimeout(browserContext);
+      if (browser && ownsBrowser) await closeWithTimeout(browser);
       if (tempVideoPath && fs.existsSync(tempVideoPath)) {
         try {
           const finalFileName = `run-${runId}-${suite.id}.webm`;
@@ -1164,6 +1813,12 @@ export class PlaywrightRunner implements IPlaywrightRunner {
 
     const stepResults: StepExecutionResult[] = [];
     let suiteFailed = false;
+
+    // The Settings page has always offered "capture only on failures", but the
+    // runner screenshotted every step regardless. On a long page each capture is
+    // seconds of scrolling and stitching, so the setting was both ignored and
+    // expensive. Honour it.
+    const screenshotPolicy = resolveScreenshotPolicy(config, fileHelper.getSettings());
 
     for (let i = 0; i < steps.length; i++) {
       const step = steps[i];
@@ -1240,11 +1895,12 @@ export class PlaywrightRunner implements IPlaywrightRunner {
                 targetUrl = url.startsWith('http') ? url : 'https://' + targetUrl;
               }
               stepLogs.push(`Navigating to: "${targetUrl}"`);
-              await page.goto(targetUrl, { waitUntil: 'load', timeout: 30_000 });
+              await navigateTo(page, targetUrl, (note) => stepLogs.push(note));
 
-              // 'load' fires before a client-rendered app has painted its form, so
-              // the next step could scan an empty DOM. Settle on network/spinner
-              // activity the same way a click does.
+              // Arriving is not the same as being ready: a client-rendered app has
+              // painted nothing yet, so the next step could scan an empty DOM.
+              // Settle on network/DOM/spinner activity the same way a click does —
+              // which also covers everything waiting for 'load' would have.
               const navSettle = await waitForPageSettle(page);
               stepLogs.push(`${navSettle.reason} (${navSettle.waitedMs}ms)`);
               break;
@@ -1292,12 +1948,54 @@ export class PlaywrightRunner implements IPlaywrightRunner {
               const match = await this.discovery.discover(page, step.targetField);
               stepLogs.push(`Resolved: "${match.selector}" (${match.score}%)`);
               result.resolvedSelector = match.selector;
-              if (!isHeadless) {
-                await page.locator(match.selector).first().pressSequentially(stepValue || '', { delay: 100 });
-              } else {
-                await page.locator(match.selector).first().fill(stepValue || '');
+
+              // The step named a field but no value. Ask the resolved element
+              // what it wants before inventing one — an email input rejects a
+              // plain label client-side, and that failure would read as an
+              // application defect rather than as invented test data. Skipped
+              // for anything that is not a text entry: a dropdown or checkbox
+              // has its own valid values and _interact() picks from those.
+              if (step.autoValue) {
+                const el = page.locator(match.selector).first();
+                const shape = await el
+                  .evaluate((node) => ({
+                    tag: node.tagName.toLowerCase(),
+                    type: (node.getAttribute('type') || '').toLowerCase(),
+                    role: (node.getAttribute('role') || '').toLowerCase(),
+                    placeholder: node.getAttribute('placeholder') || '',
+                  }))
+                  .catch(() => null);
+
+                const takesTypedText =
+                  !shape ||
+                  shape.tag === 'textarea' ||
+                  shape.role === 'textbox' ||
+                  (shape.tag === 'input' &&
+                    !['checkbox', 'radio', 'button', 'submit', 'reset', 'file', 'image'].includes(shape.type));
+
+                if (takesTypedText) {
+                  stepValue = generateAutoValue({
+                    fieldName: step.targetField,
+                    inputType: shape?.type || match.attributes?.type || undefined,
+                    placeholder: shape?.placeholder || match.attributes?.placeholder || undefined,
+                  });
+                  result.autoSuppliedValue = stepValue;
+                  stepLogs.push(
+                    `No value was given for "${step.targetField}" — auto-supplied "${stepValue}" ` +
+                      `(add \`as "your value"\` to the step to control it).`,
+                  );
+                }
               }
-              stepLogs.push(`Filled "${step.value}" into element`);
+
+              // The element decides the interaction, not the verb in the step.
+              const outcome = await this._interact(page, match, step, stepValue, (m) => stepLogs.push(m));
+              if (outcome.usedValue !== undefined && step.autoValue) {
+                result.autoSuppliedValue = outcome.usedValue;
+              }
+              stepLogs.push(
+                `${outcome.performed === 'fill' ? 'Filled' : 'Set'} «${step.targetField}»` +
+                  (outcome.usedValue !== undefined ? ` to "${outcome.usedValue}"` : ''),
+              );
 
               // Some fields trigger async validation/autocomplete calls on change —
               // settle before the next step reads the DOM.
@@ -1317,22 +2015,22 @@ export class PlaywrightRunner implements IPlaywrightRunner {
               await page.locator(match.selector).first().click({ timeout: 15_000 });
               stepLogs.push(`Clicked element`);
 
-              // Post-click: wait for page/DOM load.
-              // For traditional server-side apps this catches the full page load.
-              // For SPAs (client-side routing via pushState), we extend the wait.
+              // Post-click: a click may navigate (server-side redirect), may route
+              // client-side, or may do neither and just fire an API call. Wait for
+              // the document to be parsed if a navigation did start — but only
+              // that, not its images and fonts, which no assertion depends on.
               stepLogs.push(`Waiting for page to settle after click...`);
               try {
-                // Allow up to 10s for a full load (handles server-side redirects + slow SPAs)
-                await page.waitForLoadState('load', { timeout: 10_000 });
-                stepLogs.push(`Page load complete.`);
+                await page.waitForLoadState('domcontentloaded', { timeout: 10_000 });
+                stepLogs.push(`Document ready.`);
               } catch {
-                stepLogs.push(`Load event timed out — continuing (SPA navigation expected).`);
+                stepLogs.push(`Document-ready wait timed out — continuing (SPA navigation expected).`);
               }
 
               // Smart settle: a click often triggers an API call (create/update/
-              // delete) without a full navigation — poll network activity and
-              // loading indicators instead of a fixed sleep, so fast operations
-              // don't pay a needless delay and slow ones aren't cut short.
+              // delete) without a full navigation — poll network, DOM and loading
+              // indicators instead of a fixed sleep, so fast operations don't pay a
+              // needless delay and slow ones aren't cut short.
               const clickSettle = await waitForPageSettle(page);
               stepLogs.push(`${clickSettle.reason} (${clickSettle.waitedMs}ms)`);
 
@@ -1344,8 +2042,16 @@ export class PlaywrightRunner implements IPlaywrightRunner {
               stepLogs.push(`Scanning DOM for dropdown: "${step.targetField}"`);
               const match = await this.discovery.discover(page, step.targetField);
               result.resolvedSelector = match.selector;
-              await page.locator(match.selector).first().selectOption(stepValue || '');
-              stepLogs.push(`Selected option: "${step.value}"`);
+
+              // Native <select>, custom div-based dropdown, or something that
+              // turned out not to be a dropdown at all — _interact() decides
+              // from the element and picks an option when none was named.
+              const outcome = await this._interact(page, match, step, stepValue, (m) => stepLogs.push(m));
+              if (outcome.usedValue !== undefined) {
+                if (step.autoValue) result.autoSuppliedValue = outcome.usedValue;
+                stepLogs.push(`Selected option: "${outcome.usedValue}"`);
+              }
+
               const selectSettle = await waitForPageSettle(page, { timeoutMs: 4_000 });
               if (selectSettle.settled && selectSettle.waitedMs > 300) {
                 stepLogs.push(`${selectSettle.reason} (${selectSettle.waitedMs}ms)`);
@@ -1353,22 +2059,13 @@ export class PlaywrightRunner implements IPlaywrightRunner {
               break;
             }
 
-            case 'check': {
-              stepLogs.push(`Scanning DOM for checkbox: "${step.targetField}"`);
-              const match = await this.discovery.discover(page, step.targetField);
-              result.resolvedSelector = match.selector;
-              await page.locator(match.selector).first().check();
-              stepLogs.push(`Checked checkbox`);
-              await waitForPageSettle(page, { timeoutMs: 3_000 });
-              break;
-            }
-
+            case 'check':
             case 'uncheck': {
-              stepLogs.push(`Scanning DOM for checkbox: "${step.targetField}"`);
+              stepLogs.push(`Scanning DOM for "${step.targetField}"`);
               const match = await this.discovery.discover(page, step.targetField);
               result.resolvedSelector = match.selector;
-              await page.locator(match.selector).first().uncheck();
-              stepLogs.push(`Unchecked checkbox`);
+              const outcome = await this._interact(page, match, step, stepValue, (m) => stepLogs.push(m));
+              stepLogs.push(`Performed ${outcome.performed} on «${step.targetField}»`);
               await waitForPageSettle(page, { timeoutMs: 3_000 });
               break;
             }
@@ -1419,7 +2116,7 @@ export class PlaywrightRunner implements IPlaywrightRunner {
         }
 
         // Capture success screenshot
-        if (config?.captureScreenshots !== false) {
+        if (screenshotPolicy === 'all') {
           const screenshotUrl = await this.screenshotManager
             .capture(page, evidencePrefix, stepIndex)
             .catch(() => undefined);
@@ -1438,9 +2135,11 @@ export class PlaywrightRunner implements IPlaywrightRunner {
         // ---- Failure-context capture (Phase 4.1): screenshot + URL + DOM ----
         result.pageUrl = await Promise.resolve(page.url()).catch(() => undefined);
 
-        if (config?.captureScreenshots !== false) {
+        // A failure is the one place the whole scrollable page is worth the cost —
+        // the cause is often below the fold. Captured even under 'on-failure'.
+        if (screenshotPolicy !== 'off') {
           const errShot = await this.screenshotManager
-            .capture(page, evidencePrefix, stepIndex)
+            .capture(page, evidencePrefix, stepIndex, { fullPage: true })
             .catch(() => undefined);
           if (errShot) result.screenshotPath = errShot;
         }

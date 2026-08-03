@@ -5,7 +5,17 @@ import { matchUrlLiterally, matchUrlSemantically, normaliseUrl, roleOf } from '.
 // Universal timeout: 15 seconds max wait for any validation assertion.
 // This handles slow post-login redirects and heavy SPA navigation gracefully.
 const VALIDATION_TIMEOUT_MS = 15_000; // 15 seconds
-const POLL_INTERVAL_MS = 500;           // check every 500ms
+const POLL_INTERVAL_MS = 200;           // check every 200ms
+
+/**
+ * How long the URL must hold still before a semantic match is considered.
+ *
+ * The wait exists to let a redirect chain finish — landing on `/` for a moment on
+ * the way to `/desktop/home` must not be judged. Once the address bar has stopped
+ * moving there is nothing further to wait for, so a URL assertion that will pass
+ * semantically passes in about a second instead of burning the whole budget first.
+ */
+const URL_STABLE_MS = 900;
 
 export interface ValidationOutcome {
   success: boolean;
@@ -84,9 +94,17 @@ export class Validator implements IValidator {
       switch (type) {
         // ------------------------------------------------------------------ //
         // URL VALIDATION                                                      //
-        //   1. Immediately checks if current URL already contains the value  //
-        //   2. Falls back to waitForURL (navigation events)                  //
-        //   3. Falls back to polling (SPA pushState routing)                 //
+        //   A single polling loop, sharing ONE timeout budget, that watches   //
+        //   the address bar for the literal route and accepts a corroborated  //
+        //   semantic match as soon as the URL stops moving.                   //
+        //                                                                     //
+        //   The tiers used to run in sequence — waitForURL for the full       //
+        //   budget, then an identical poll for the full budget again, and     //
+        //   only then the semantic check. Both stages test the same predicate //
+        //   on the same URL, so an assertion destined to pass semantically    //
+        //   spent 30 seconds proving twice over what it already knew before   //
+        //   returning "passed". Verdict below is unchanged; only the waiting  //
+        //   is gone.                                                          //
         // ------------------------------------------------------------------ //
         case 'url': {
           if (!value) {
@@ -94,64 +112,78 @@ export class Validator implements IValidator {
           }
 
           // ── 1. Check the current URL immediately (zero wait) ──────────────
-          // Common case: navigation already completed (e.g. after click + networkidle).
+          // Common case: navigation already completed (e.g. after click + settle).
           const immediate = matchUrlLiterally(value, page.url());
           if (immediate.matched) return { success: true, note: immediate.note };
 
+          const deadline = Date.now() + VALIDATION_TIMEOUT_MS;
           let actualUrl = page.url();
+          let stableSince = Date.now();
+          // A landing-page claim is only ever accepted with evidence from the page
+          // itself, and that evidence costs a DOM read — so it is retried on a
+          // slower cadence than the address-bar poll, not on every pass.
+          let lastSemanticCheckAt = 0;
 
-          // ── 2. waitForURL — Playwright navigation-event based ─────────────
-          // Catches standard page loads and server-side redirects.
-          try {
-            await page.waitForURL((u) => matchUrlLiterally(value, u.toString()).matched, {
-              timeout: VALIDATION_TIMEOUT_MS,
-            });
-            return { success: true, note: matchUrlLiterally(value, page.url()).note };
-          } catch {
-            // timed out — fall through to polling
-          }
+          const trySemantic = async (url: string): Promise<ValidationOutcome | null> => {
+            if (step.strict) return null;
+            const corroborated =
+              roleOf(value) === 'landing' ? await this.looksLikeAuthenticatedApp(page) : true;
+            const semantic = matchUrlSemantically(value, url, corroborated);
+            return semantic.matched ? { success: true, note: semantic.note } : null;
+          };
 
-          // ── 3. Polling fallback — handles SPA pushState routing ───────────
-          const { ok } = await this.waitUntil(async () => {
-            actualUrl = page.url();
-            return matchUrlLiterally(value, actualUrl).matched;
-          });
-
-          if (!ok) {
-            actualUrl = page.url();
-
-            // ── 4. Semantic tier ────────────────────────────────────────────
-            // The literal route never appeared. Before calling this a defect,
-            // check whether the test and the application are simply using
-            // different words for the same page — and only accept that when the
-            // page itself backs it up. Skipped entirely when the author asked
-            // for an exact route.
-            if (!step.strict) {
-              const corroborated = roleOf(value) === 'landing'
-                ? await this.looksLikeAuthenticatedApp(page)
-                : true;
-              const semantic = matchUrlSemantically(value, actualUrl, corroborated);
-              if (semantic.matched) return { success: true, note: semantic.note };
+          while (Date.now() < deadline) {
+            const currentUrl = page.url();
+            if (currentUrl !== actualUrl) {
+              // Still redirecting — restart the stability window.
+              actualUrl = currentUrl;
+              stableSince = Date.now();
+              lastSemanticCheckAt = 0;
             }
 
-            const sameRole = roleOf(value) && roleOf(value) === roleOf(actualUrl);
-            return {
-              success: false,
-              error:
-                `URL validation failed after ${VALIDATION_TIMEOUT_MS / 1000}s. ` +
-                `Expected URL to contain "${value}", but actual URL was "${actualUrl}".\n\n` +
-                (step.strict
-                  ? `This step requested an exact route match, so no semantic fallback was attempted.`
-                  : sameRole
-                    ? `Both paths name the same kind of page, but the page did not look like a signed-in view, ` +
-                      `so this was not accepted as an equivalent route.`
-                    : `"${normaliseUrl(value)}" and "${normaliseUrl(actualUrl)}" are different pages, not two names ` +
-                      `for the same one. If the application is correct here, update the expected route in the test case.\n\n` +
-                      `Tip: If this is a single-page app (SPA), add "wait 2 seconds" before the URL assertion ` +
-                      `to allow client-side routing to complete.`),
-            };
+            // ── 2. Literal tier — exact substring or whole path segments ────
+            const literal = matchUrlLiterally(value, actualUrl);
+            if (literal.matched) return { success: true, note: literal.note };
+
+            // ── 3. Semantic tier — the test and the app name the same page ──
+            // Only once the address bar has held still: a redirect chain passing
+            // through a landing-shaped URL must not be judged mid-flight. Retried
+            // while the budget lasts, since the signed-in chrome that corroborates
+            // a landing match may still be rendering.
+            const stableFor = Date.now() - stableSince;
+            if (stableFor >= URL_STABLE_MS && Date.now() - lastSemanticCheckAt >= URL_STABLE_MS) {
+              lastSemanticCheckAt = Date.now();
+              const semantic = await trySemantic(actualUrl);
+              if (semantic) return semantic;
+            }
+
+            await new Promise<void>((r) => setTimeout(r, POLL_INTERVAL_MS));
           }
-          break;
+
+          // Budget spent. One last look, so a page that finished rendering on the
+          // final beat is judged on its finished state rather than a stale read.
+          actualUrl = page.url();
+          const lastLiteral = matchUrlLiterally(value, actualUrl);
+          if (lastLiteral.matched) return { success: true, note: lastLiteral.note };
+          const lastSemantic = await trySemantic(actualUrl);
+          if (lastSemantic) return lastSemantic;
+
+          const sameRole = roleOf(value) && roleOf(value) === roleOf(actualUrl);
+          return {
+            success: false,
+            error:
+              `URL validation failed after ${VALIDATION_TIMEOUT_MS / 1000}s. ` +
+              `Expected URL to contain "${value}", but actual URL was "${actualUrl}".\n\n` +
+              (step.strict
+                ? `This step requested an exact route match, so no semantic fallback was attempted.`
+                : sameRole
+                  ? `Both paths name the same kind of page, but the page did not look like a signed-in view, ` +
+                    `so this was not accepted as an equivalent route.`
+                  : `"${normaliseUrl(value)}" and "${normaliseUrl(actualUrl)}" are different pages, not two names ` +
+                    `for the same one. If the application is correct here, update the expected route in the test case.\n\n` +
+                    `Tip: If this is a single-page app (SPA), add "wait 2 seconds" before the URL assertion ` +
+                    `to allow client-side routing to complete.`),
+          };
         }
 
         // ------------------------------------------------------------------ //

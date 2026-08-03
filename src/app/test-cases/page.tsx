@@ -9,6 +9,7 @@ import { useRouter } from 'next/navigation';
 import Link from 'next/link';
 import { TestCase } from '@/types/testCase';
 import SafeFormattedDate from '@/components/SafeFormattedDate';
+import { StepLintPanel, useStepLint } from '@/components/StepLintPanel';
 
 const EXEC_TYPE_FILTERS = ['All', 'Functional', 'Smoke', 'Regression'] as const;
 type ExecTypeFilter = typeof EXEC_TYPE_FILTERS[number];
@@ -30,6 +31,10 @@ export default function TestCasesPage() {
   const [moduleName, setModuleName] = useState('');
   const [stepsText, setStepsText] = useState('');
   const [formError, setFormError] = useState<string | null>(null);
+
+  // Live parse feedback for the step editor: what the runner will actually do
+  // with each line, shown while it is being written rather than mid-run.
+  const { report: lintReport, checking: lintChecking } = useStepLint(isModalOpen ? stepsText : '');
 
   // Search filter
   const [searchTerm, setSearchTerm] = useState('');
@@ -127,20 +132,11 @@ export default function TestCasesPage() {
         throw new Error(data.error || data.details || 'Failed to save test case');
       }
 
-      // Warn (non-blocking) about steps the parser could not understand, so the
-      // user can rephrase them rather than discovering the failure only at run time.
-      const unparsed = Array.isArray(data.steps)
-        ? data.steps.filter((s: { type?: string }) => s?.type === 'unparsed')
-        : [];
-      if (unparsed.length > 0) {
-        const lines = unparsed
-          .map((s: { rawText?: string }) => `  • ${s.rawText ?? ''}`)
-          .join('\n');
-        alert(
-          `Saved, but ${unparsed.length} step(s) were not understood and will fail at run time:\n\n${lines}\n\n` +
-            `Rephrase them starting with an action verb (click, enter, select, check, navigate) or an assertion (verify/assert/expect).`,
-        );
-      }
+      // Unparsable steps no longer need an alert here: the lint panel under the
+      // editor has been showing each one, with the reason and a suggested
+      // rewrite, the whole time it was being written. An alert on save would
+      // repeat what is already on screen — and the run endpoint refuses to
+      // start a run containing them anyway, so nothing can slip through.
 
       // Close modal and refresh list
       setIsModalOpen(false);
@@ -496,6 +492,7 @@ Step 4: Click the "Sign In" button
 Expected Result: Verify success message "Dashboard Welcome"`}
                   className="bg-zinc-900 border border-zinc-800 rounded-xl p-4 font-mono text-xs sm:text-sm text-white placeholder-zinc-650 focus:outline-none focus:border-purple-500 resize-none h-44"
                 />
+                <StepLintPanel report={lintReport} checking={lintChecking} />
               </div>
 
               {/* Bottom Actions footer */}

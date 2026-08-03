@@ -22,7 +22,12 @@ export class TestCaseParser implements ITestCaseParser {
       .trim()
       .replace(/\s*(?:->|-->|=>|>|→|➔)\s*$/g, '')
       .replace(/[.,;!?:="']/g, '')
-      .replace(/\s+(?:field|input|box|textbox|button|btn|link|area|dropdown|selector|icon)$/i, '')
+      // Filler that survives a verb ("fill UP the name", "click ON the button")
+      // and articles. Left in place the target becomes "up the workpod name",
+      // which no element on earth is labelled.
+      .replace(/^(?:up|out|in|on|at|to)\s+/i, '')
+      .replace(/^(?:the|a|an|this|that|its|their)\s+/i, '')
+      .replace(/\s+(?:field|input|box|textbox|button|btn|link|area|dropdown|selector|icon|menu|option)$/i, '')
       .trim();
   }
 
@@ -81,6 +86,162 @@ export class TestCaseParser implements ITestCaseParser {
   private static readonly UNSUPPORTED_ACTION =
     /^(hover|scroll|refresh|reload|drag|drop|upload|download|resize|maximi[sz]e|minimi[sz]e|zoom|swipe|double[-\s]?click|right[-\s]?click|go\s+back|go\s+forward|switch\s+to|press\s+(?:the\s+)?(?:enter|tab|escape|esc|space|backspace|delete|arrow\w*)\b)/i;
 
+  // ---------------------------------------------------------------------
+  // FILL GRAMMAR
+  //
+  // Two lists, every combination derived from them. Adding a synonym means
+  // adding one word here, and it works in every phrasing at once.
+  // ---------------------------------------------------------------------
+
+  /** Verbs that mean "put this text into that field". */
+  private static readonly FILL_VERBS = [
+    'enter', 'type', 'fill', 'input', 'set', 'provide', 'supply', 'populate', 'write',
+  ];
+
+  /** `<verb> VALUE <connector> FIELD` — the value comes first. */
+  private static readonly VALUE_FIRST_CONNECTORS = ['into', 'in', 'to', 'on', 'inside'];
+
+  /** `<verb> FIELD <connector> VALUE` — the field comes first. */
+  private static readonly FIELD_FIRST_CONNECTORS = ['with', 'as', 'to', '=', ':', '-'];
+
+  /**
+   * `to` reads both ways: "set language to English" names the field first,
+   * "enter John into the name box" names the value first. The verb settles it —
+   * `set`/`populate` take a target and then a value, everything else follows the
+   * older "enter VALUE into FIELD" reading so existing test cases keep working.
+   */
+  private static readonly FIELD_FIRST_TO_VERBS = new Set(['set', 'populate']);
+
+  private static escapeForRegex(literal: string): string {
+    return literal.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  }
+
+  /**
+   * Matches any supported way of saying "put a value in a field", including the
+   * value-less form ("Enter workpod name") which defers the value to execution.
+   */
+  private matchFill(
+    cleanText: string,
+  ): { targetField: string; value?: string; autoValue?: boolean } | null {
+    const verbs = TestCaseParser.FILL_VERBS.join('|');
+    const esc = TestCaseParser.escapeForRegex;
+
+    const verbMatch = cleanText.match(new RegExp(`^(${verbs})\\b\\s*`, 'i'));
+    if (!verbMatch) return null;
+    const verb = verbMatch[1].toLowerCase();
+    // "enter in the name" / "fill into the box" — a connector glued to the verb
+    // is part of the verb phrase, not a separator.
+    const rest = cleanText.slice(verbMatch[0].length).replace(/^(?:in|into)\s+/i, '').trim();
+    if (!rest) return null;
+
+    const fieldFirstConnectors = TestCaseParser.FIELD_FIRST_CONNECTORS.filter(
+      (c) => c !== 'to' || TestCaseParser.FIELD_FIRST_TO_VERBS.has(verb),
+    );
+    const valueFirstConnectors = TestCaseParser.VALUE_FIRST_CONNECTORS.filter(
+      (c) => c !== 'to' || !TestCaseParser.FIELD_FIRST_TO_VERBS.has(verb),
+    );
+
+    // Value-first is tried before field-first so that "enter X into Y" keeps its
+    // long-standing reading rather than being re-parsed by a newly added connector.
+    const wordConnectors = valueFirstConnectors.map(esc).join('|');
+    const valueFirst = rest.match(
+      new RegExp(`^["']?(.+?)["']?\\s+(?:${wordConnectors})\\s+(?:the\\s+)?(?:input\\s+)?["']?([^"']+)["']?$`, 'i'),
+    );
+    if (valueFirst) {
+      return {
+        targetField: this.cleanTargetField(valueFirst[2]),
+        value: valueFirst[1].trim(),
+      };
+    }
+
+    // Field-first. Word connectors need surrounding spaces; symbol connectors
+    // (= : -) do not, and must not swallow a hyphen inside a field name.
+    const fieldFirstWords = fieldFirstConnectors.filter((c) => /^[a-z]+$/i.test(c));
+    if (fieldFirstWords.length > 0) {
+      const fieldFirst = rest.match(
+        new RegExp(`^["']?(.+?)["']?\\s+(?:${fieldFirstWords.map(esc).join('|')})\\s+["']?(.+?)["']?$`, 'i'),
+      );
+      if (fieldFirst) {
+        return {
+          targetField: this.cleanTargetField(fieldFirst[1]),
+          value: fieldFirst[2].trim(),
+        };
+      }
+    }
+
+    const symbolSplit = rest.match(/^["']?([^"'=:]+?)["']?\s*[=:]\s*["']?(.+?)["']?$/);
+    if (symbolSplit) {
+      return {
+        targetField: this.cleanTargetField(symbolSplit[1]),
+        value: symbolSplit[2].trim(),
+      };
+    }
+    // A hyphen only separates when it is spaced, so "e-mail" stays one field name.
+    const dashSplit = rest.match(/^["']?(.+?)["']?\s+-\s+["']?(.+?)["']?$/);
+    if (dashSplit) {
+      return {
+        targetField: this.cleanTargetField(dashSplit[1]),
+        value: dashSplit[2].trim(),
+      };
+    }
+
+    // No connector at all: the step named a field and stopped ("Enter workpod
+    // name"). The field is known, the value is not — so it runs with a value
+    // generated at execution time rather than being rejected as gibberish.
+    const target = this.cleanTargetField(rest);
+    if (!target) return null;
+    return { targetField: target, autoValue: true };
+  }
+
+  /**
+   * Explains why a step did not parse, and shows one that would.
+   *
+   * The old message told every failing step to "start with an action verb
+   * (click, enter, select…)" regardless of what was wrong with it. For a step
+   * reading "Enter workpod name" that advice is not merely unhelpful, it is
+   * false — the step already starts with one of the listed verbs — and it sent
+   * the reader looking at element discovery for a failure that happened before
+   * the browser was ever involved. A wrong explanation costs more than none.
+   */
+  private diagnoseUnparsed(trimmed: string, cleanText: string): { warning: string; suggestion?: string } {
+    const firstWord = (cleanText.match(/^([a-z]+)/i)?.[1] ?? '').toLowerCase();
+    const known = new Set([
+      ...TestCaseParser.FILL_VERBS,
+      'click', 'press', 'tap', 'choose', 'select', 'check', 'tick', 'uncheck', 'untick',
+      'navigate', 'go', 'goto', 'open', 'visit', 'load', 'browse', 'wait',
+      'verify', 'assert', 'expect', 'confirm', 'ensure',
+    ]);
+
+    if (firstWord && known.has(firstWord)) {
+      // The verb was understood; the rest of the sentence was not.
+      return {
+        warning:
+          `Step could not be understood: "${trimmed}". The verb "${firstWord}" is supported, ` +
+          `but what follows it does not name a target this runner can act on.`,
+        suggestion:
+          `Name the element, and a value if one is needed — for example ` +
+          `\`${firstWord} "Field name" as "the text to type"\` or \`click "Button label"\`.`,
+      };
+    }
+
+    return {
+      warning:
+        `Step could not be understood: "${trimmed}". "${firstWord || trimmed}" is not a recognised action.`,
+      suggestion:
+        `Start with an action (click, enter, select, check, navigate, wait) or an assertion ` +
+        `(verify/assert/expect) — for example \`click "Save"\` or \`verify "Saved" is visible\`.`,
+    };
+  }
+
+  /**
+   * Wording that delegates the choice to the runner rather than naming an
+   * option: "select any value", "pick a random option". Treated as "choose one
+   * of whatever this control offers", because there is no option literally
+   * called "any value" and searching for one would fail every time.
+   */
+  private static readonly ANY_OPTION =
+    /^(?:any|some|random|whatever|first|the\s+first|a|an)(?:\s+(?:random|valid|available))?(?:\s+(?:value|option|item|entry|choice|one))?$/i;
+
   /** Derives a URL fragment from a page name: "Login" → "/login", "Sign Up" → "/sign-up". */
   private pageNameToUrlFragment(pageName: string): string | null {
     const slug = pageName
@@ -135,7 +296,23 @@ export class TestCaseParser implements ITestCaseParser {
       }
 
       // 1. GOTO / NAVIGATE TO
-      let match = cleanText.match(/^(?:navigate\s+to|go\s+to|goto|open|visit|load|browse\s+to)\b/i);
+      //
+      // "open" is the ambiguous one: "open https://x.com/login" is navigation,
+      // but "open the Intent dropdown" is a click on a control that happens to
+      // share the verb. Treating the latter as navigation sent the browser off
+      // to a made-up URL built out of the widget's name — a spectacular failure
+      // with no relationship to anything the test was checking. So `open` only
+      // navigates when what follows actually looks like somewhere to navigate to.
+      let match = cleanText.match(/^(?:navigate\s+to|go\s+to|goto|visit|load|browse\s+to)\b/i);
+      if (!match && /^open\b/i.test(cleanText)) {
+        const afterOpen = cleanText.replace(/^open\s+/i, '').trim();
+        const looksNavigable =
+          /https?:\/\//i.test(afterOpen) ||
+          /[a-z0-9-]+\.[a-z]{2,}(?:\/|$)/i.test(afterOpen) ||
+          /^\//.test(afterOpen) ||
+          /\bpage\b/i.test(afterOpen);
+        if (looksNavigable) match = cleanText.match(/^open\b/i);
+      }
       if (match) {
         // Prefer an explicit URL anywhere in the line (handles "open Login page - https://x.com/login").
         const urlInLine = cleanText.match(/https?:\/\/[^\s"'<>)]+/i);
@@ -254,67 +431,106 @@ export class TestCaseParser implements ITestCaseParser {
         return;
       }
 
-      // 4a. FILL: (enter|type|fill) [value] (into|in|to|on) [field]
-      let fillMatch = cleanText.match(/^(?:enter|type|fill)\s+["']?([^"']+)["']?\s+(?:into|in|to|on)\s+(?:the\s+)?(?:input\s+)?["']?([^"']+)["']?/i);
-      if (fillMatch) {
+      // 4. FILL — one grammar, generated from a verb set and a connector set.
+      //
+      // This used to be four hand-written regexes, each with its own verb list
+      // and its own connector list. The gaps between them were invisible until a
+      // test failed: `fill X with Y` worked but `enter X with Y` did not, `input`
+      // counted as a verb for credentials but not for fields, `set X to Y` was
+      // not a fill at all. None of that was a decision anyone made — it was four
+      // patterns drifting apart. Deriving every combination from two lists means
+      // a phrasing is supported because it is in the grammar, not because
+      // somebody remembered to write a fifth regex.
+      const fill = this.matchFill(cleanText);
+      if (fill) {
         parsedSteps.push({
           stepIndex,
           rawText: trimmed,
           type: 'action',
           action: 'fill',
-          targetField: this.cleanTargetField(fillMatch[2]),
-          value: fillMatch[1],
+          targetField: fill.targetField,
+          ...(fill.autoValue ? { autoValue: true } : { value: fill.value }),
         });
         return;
       }
 
-      // 4b. FILL: (enter|type|fill) [field] [separator - or : or =] [value]
-      fillMatch = cleanText.match(/^(?:enter|type|fill)(?:\s+in|\s+into)?\s+["']?([^"'\x2d\x3a\x3d]+?)["']?\s*[\x2d\x3a\x3d]\s*["']?([^"']+)["']?/i);
-      if (fillMatch) {
+      // 5. SELECT FROM A DROPDOWN — before the click rule, because "choose" is
+      // both a click verb and a select verb and the select reading is more
+      // specific. Ordered the other way round, "choose Private from Visibility"
+      // became a click on an element called "Private from Visibility".
+      //
+      // Note none of these decide whether the control is a real <select>: the
+      // runner inspects the resolved element and drives it accordingly, so a
+      // div-based Angular/MUI dropdown works from the same wording.
+
+      // 5a. An explicitly named option: "select Private from Visibility".
+      match = cleanText.match(/^(?:select|choose|pick|set)\s+["']?([^"']+?)["']?\s+(?:from|in|for|on)\s+(?:the\s+)?(?:dropdown\s+)?["']?([^"']+)["']?$/i);
+      if (match) {
+        const optionText = match[1].trim();
+        const target = this.cleanTargetField(match[2]);
+        // "any value" / "a random option" is the author explicitly delegating
+        // the choice, not naming an option literally called "any value".
+        const delegated = TestCaseParser.ANY_OPTION.test(optionText);
         parsedSteps.push({
           stepIndex,
           rawText: trimmed,
           type: 'action',
-          action: 'fill',
-          targetField: this.cleanTargetField(fillMatch[1]),
-          value: fillMatch[2],
+          action: 'select',
+          targetField: target,
+          ...(delegated ? { autoValue: true } : { value: optionText }),
         });
         return;
       }
 
-      // 4c. FILL: fill (in) [field] with [value]
-      fillMatch = cleanText.match(/^fill(?:\s+in)?\s+["']?([^"']+)["']?\s+with\s+["']?([^"']+)["']?/i);
-      if (fillMatch) {
+      // 5b. "Open the Intent dropdown and select any value" — one sentence that
+      // opens a control and picks from it. Both halves name the same dropdown,
+      // so it is a single select, not two steps.
+      match = cleanText.match(
+        /^(?:open|expand|click(?:\s+on)?)\s+(?:the\s+)?["']?(.+?)["']?\s*(?:dropdown|list|menu|select)?\s*(?:,|and|then|&)\s*(?:select|choose|pick)\s+(.+)$/i,
+      );
+      if (match) {
+        const optionText = match[2].trim();
+        const delegated = TestCaseParser.ANY_OPTION.test(optionText);
         parsedSteps.push({
           stepIndex,
           rawText: trimmed,
           type: 'action',
-          action: 'fill',
-          targetField: this.cleanTargetField(fillMatch[1]),
-          value: fillMatch[2],
+          action: 'select',
+          targetField: this.cleanTargetField(match[1]),
+          ...(delegated ? { autoValue: true } : { value: optionText.replace(/^["']|["']$/g, '') }),
         });
         return;
       }
 
-      // 4d. FILL: (enter|type|fill) [field] as [value]
-      fillMatch = cleanText.match(/^(?:enter|type|fill)\s+["']?([^"']+)["']?\s+as\s+["']?([^"']+)["']?/i);
-      if (fillMatch) {
-        parsedSteps.push({
-          stepIndex,
-          rawText: trimmed,
-          type: 'action',
-          action: 'fill',
-          targetField: this.cleanTargetField(fillMatch[1]),
-          value: fillMatch[2],
-        });
-        return;
+      // 5c. "Select visibility" / "Choose a domain type" — the control is named,
+      // the option is not, so the runner picks one of its own options.
+      match = cleanText.match(/^(?:select|choose|pick)\s+(?:an?\s+|the\s+)?["']?([^"']+?)["']?(?:\s+(?:dropdown|list|menu|option|value))?$/i);
+      if (match) {
+        const target = this.cleanTargetField(match[1]);
+        if (target) {
+          parsedSteps.push({
+            stepIndex,
+            rawText: trimmed,
+            type: 'action',
+            action: 'select',
+            targetField: target,
+            autoValue: true,
+          });
+          return;
+        }
       }
 
-      // 5. CLICK ELEMENT
+      // 6. CLICK ELEMENT
       // The whole phrase after the verb is the target. Filler words are stripped
       // separately rather than inside the capture — matching "on"/"the" as part of
       // the pattern made 'Click on the "Save" button' resolve to the word "the".
-      match = cleanText.match(/^(?:click|press|tap|choose)\s+(?:on\s+)?(?:the\s+)?(.+)$/i);
+      //
+      // The verb list is deliberately wide. Which of these words a tester reaches
+      // for carries no information about the application, so rejecting a step for
+      // saying "hit" instead of "click" fails a test over vocabulary.
+      match = cleanText.match(
+        /^(?:click|press|tap|hit|push|toggle|activate|expand|collapse|open|add|invite|upload|submit)\s+(?:on\s+)?(?:the\s+)?(.+)$/i,
+      );
       if (match) {
         // A quoted fragment anywhere in the phrase is the author naming the
         // element exactly; it beats the surrounding words.
@@ -329,16 +545,19 @@ export class TestCaseParser implements ITestCaseParser {
         return;
       }
 
-      // 6. SELECT VALUE IN DROPDOWN
-      match = cleanText.match(/^(?:select|choose)\s+["']?([^"']+)["']?\s+(?:from|in)\s+(?:dropdown\s+)?["']?([^"']+)["']?/i);
+      // 6b. A bare verb that is unmistakably a click on a control of that name
+      // ("Add members", "Submit", "Cancel"). The element still has to be found
+      // with real confidence at run time, so a wrong guess cannot silently click
+      // something unrelated — it fails with "element not found" instead.
+      match = cleanText.match(/^(add|submit|cancel|save|continue|next|back|close|logout|log\s*out|sign\s*out)(.*)$/i);
       if (match) {
+        const rest = match[2].trim();
         parsedSteps.push({
           stepIndex,
           rawText: trimmed,
           type: 'action',
-          action: 'select',
-          targetField: this.cleanTargetField(match[2]),
-          value: match[1],
+          action: 'click',
+          targetField: this.cleanTargetField(rest ? `${match[1]} ${rest}` : match[1]),
         });
         return;
       }
@@ -932,14 +1151,14 @@ export class TestCaseParser implements ITestCaseParser {
       } else {
         // No known pattern matched. Never blindly click — mark the step unparsed
         // so the runner reports a clear failure and the UI can prompt a rephrase.
+        const diagnosis = this.diagnoseUnparsed(trimmed, cleanText);
         parsedSteps.push({
           stepIndex,
           rawText: trimmed,
           type: 'unparsed',
           targetField: '',
-          parseWarning:
-            `Step could not be understood: "${trimmed}". ` +
-            `Start with an action verb (click, enter, select, check, navigate) or an assertion (verify/assert/expect).`,
+          parseWarning: diagnosis.warning,
+          parseSuggestion: diagnosis.suggestion,
         });
       }
     });

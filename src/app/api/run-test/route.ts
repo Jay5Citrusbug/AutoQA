@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { RunTestRequestSchema } from '@/types/apiModels';
 import { PlaywrightRunner } from '@/core/execution/playwrightRunner';
 import { TestCaseParser } from '@/core/parser/testCaseParser';
+import { formatBlockingErrors, lintStepsText } from '@/core/parser/stepLinter';
 import { runRegistry } from '@/core/execution/runRegistry';
 
 export async function POST(request: NextRequest) {
@@ -33,6 +34,28 @@ export async function POST(request: NextRequest) {
     // Parse test suites — splits on TC headers for multi-TC runs
     const parser = new TestCaseParser();
     const suites = parser.parseTestSuites(stepsText);
+
+    // ---- Pre-flight gate ----
+    // A step that cannot be parsed can never execute, and that is knowable the
+    // instant the text arrives. Starting the run anyway means paying for a
+    // browser launch, a login and every preceding step before reporting a fault
+    // that was present before anything started — and reporting it one step at a
+    // time, so a file with four bad steps takes four runs to fix. Everything
+    // wrong is reported together, up front, and the run does not begin.
+    const lint = lintStepsText(stepsText);
+    if (!lint.runnable) {
+      return NextResponse.json(
+        {
+          error: 'Test case contains steps that cannot be executed',
+          details:
+            `${lint.errorCount} step(s) could not be understood, so this run was not started. ` +
+            `Fix them and run again — nothing was executed.`,
+          blockingSteps: formatBlockingErrors(lint),
+          lint,
+        },
+        { status: 422 },
+      );
+    }
 
     if (suites.length === 0) {
       return NextResponse.json(
@@ -91,6 +114,10 @@ export async function POST(request: NextRequest) {
         pageUrl: r.pageUrl,
         reusedSession: r.reusedSession,
         assertionNote: r.assertionNote,
+        // Data the runner invented because the step did not supply it. Surfaced
+        // so the reader sees what was actually typed or chosen, not just that
+        // the step passed.
+        autoSuppliedValue: r.autoSuppliedValue,
       })),
       bugReport: context.bugReport,
       failureClassification: context.failureClassification,

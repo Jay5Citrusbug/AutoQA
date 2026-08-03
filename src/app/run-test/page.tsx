@@ -11,6 +11,7 @@ import {
 import { ExecutionType, StageStatus, ExecutionStage, StepExecution, BrowserEngine, DeviceMode } from '@/types/mvp';
 import { ImportFileModal } from '@/components/ImportFileModal';
 import { ImportedTestCase } from '@/utils/fileImportParser';
+import { StepLintPanel, useStepLint } from '@/components/StepLintPanel';
 
 export default function RunTestPage() {
   // --- FORM STATES ---
@@ -115,6 +116,9 @@ export default function RunTestPage() {
   ]);
 
   // Textarea metrics helpers
+  // Live parse feedback: shows what the runner will do with each step. It
+  // blocks nothing here — the run endpoint enforces the same check server-side.
+  const { report: lintReport, checking: lintChecking } = useStepLint(stepsText);
   const charCount = stepsText.length;
   const lineCount = stepsText.split('\n').length;
   const textareaRef = useRef<HTMLTextAreaElement>(null);
@@ -495,6 +499,15 @@ ${logs}
       const data = await response.json();
 
       if (!response.ok) {
+        // 422 = the pre-flight gate refused to start. Nothing ran, and the
+        // response lists every unrunnable step — show them all rather than a
+        // single generic line, since fixing them one run at a time is exactly
+        // what the gate exists to prevent.
+        if (response.status === 422 && Array.isArray(data.blockingSteps)) {
+          throw new Error(
+            `${data.details ?? data.error}\n\n${data.blockingSteps.map((l: string) => `• ${l}`).join('\n')}`,
+          );
+        }
         throw new Error(data.error || data.details?.fieldErrors?.stepsText?.[0] || 'Browser automation run failed');
       }
 
@@ -791,6 +804,11 @@ ${logs}
                     </span>
                     <span>{charCount} / 5000 chars</span>
                   </div>
+                  {(lintReport || lintChecking) && (
+                    <div className="px-5 py-3 border-t border-zinc-800/60">
+                      <StepLintPanel report={lintReport} checking={lintChecking} />
+                    </div>
+                  )}
                 </div>
 
                 {/* FIELD 4: Expected Result */}
