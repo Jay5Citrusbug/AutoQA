@@ -119,7 +119,7 @@ SQLite + Prisma solves most of it with near-zero ops. This can run in parallel w
 
 - **`smart-matcher/` is dead code.** A well-documented, tested semantic-matching library (fuzzy matching, multi-language, selector generation) that **is not imported anywhere** in the app — the app has its own `elementDiscovery.ts` doing the same job. Two implementations of the hardest sub-problem. Pick one, delete the other, or the divergence will cost you later.
 - **`report-bug-tracker` exists twice** — as a sibling package and as `src/lib/report-bug-tracker/`. Same problem, flagged as task 0.4 and still open.
-- **Repo hygiene:** loose HTML/screenshot dumps in the workspace root (`audit_details_drawer`, `compare_modal`, `run_test_page`, …), `.playwright-mcp/` logs, `tsconfig.tsbuildinfo` committed. Cosmetic, but it obscures the real structure. Also: `qa-login-agent` is no longer a login agent — the name undersells it and confuses newcomers.
+- **Repo hygiene:** loose HTML/screenshot dumps in the workspace root (`audit_details_drawer`, `compare_modal`, `run_test_page`, …), `.playwright-mcp/` logs. Cosmetic, but it obscures the real structure. Also: `qa-login-agent` is no longer a login agent — the name undersells it and confuses newcomers.
 - **`README.md` is one line.** For a platform you want others to adopt, this is the cheapest credibility fix available.
 - **The known credential leak** (the QA password, flagged in Phase 0 of `PRODUCTION_PLAN.md`) is still listed as outstanding user action. It is not only in git history — `tests/example.spec.ts` carries it in plaintext at HEAD, alongside a real email address. Rotate it and scrub both before this repo is shared anywhere.
 
