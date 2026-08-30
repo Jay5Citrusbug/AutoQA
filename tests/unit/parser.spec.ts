@@ -144,3 +144,25 @@ test.describe('TestCaseParser — unparsed steps (never blind-click)', () => {
     expect(s.type).toBe('unparsed');
   });
 });
+
+test.describe('TestCaseParser - declarative outcome assertions', () => {
+  test('"<thing> is created successfully" asserts a success message', () => {
+    const s = parseOne('WorkPod is created successfully');
+    expect(s.type).toBe('validation');
+    expect(s.validation).toBe('success_msg');
+  });
+
+  test('past tense and "has been" forms also parse', () => {
+    expect(parseOne('The task was saved').validation).toBe('success_msg');
+    expect(parseOne('The record has been deleted successfully').validation).toBe('success_msg');
+    expect(parseOne('Verify that the invite was sent successfully').validation).toBe('success_msg');
+  });
+
+  test('negated outcomes are not silently asserted as positive', () => {
+    expect(parseOne('WorkPod is not created').type).toBe('unparsed');
+  });
+
+  test('unrelated declarative prose is still unparsed', () => {
+    expect(parseOne('Task count increases by 1').type).toBe('unparsed');
+  });
+});

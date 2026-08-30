@@ -1037,6 +1037,34 @@ export class TestCaseParser implements ITestCaseParser {
         }
       }
 
+      // 14-N4. DECLARATIVE OUTCOME - "<thing> is/was <successfully> <done>"
+      //   'WorkPod is created successfully'
+      //   'Verify the task was saved'
+      //   'The record has been deleted successfully'
+      //
+      // Same declarative family as 14-N1..14-N3, not a new one: the author
+      // states an outcome instead of naming an element. It asserts that a
+      // success banner/toast/status region is on the page, which is what such a
+      // step is actually claiming - asserting the sentence itself as page text
+      // would fail on the first app whose toast reads "Workpod created".
+      //
+      // Negated forms ("is not created") deliberately do not match: they are a
+      // different claim, and silently asserting the positive one would be worse
+      // than reporting the step as not understood.
+      match = cleanText.match(
+        /^(?:(?:verify|assert|check|confirm|ensure)\s+(?:that\s+)?)?(?:the\s+|a\s+|an\s+)?(.+?)\s+(?:is|are|was|were|has\s+been|have\s+been|gets?|got|should\s+be)\s+(?:successfully\s+)?(?:created|added|saved|updated|modified|edited|deleted|removed|submitted|uploaded|sent|assigned|archived|published|cancell?ed|completed|generated|imported|exported|duplicated|renamed|copied|registered)(?:\s+successfully)?\s*[.!]?$/i,
+      );
+      if (match && match[1].replace(/["'.,;!?]/g, '').trim()) {
+        parsedSteps.push({
+          stepIndex,
+          rawText: trimmed,
+          type: 'validation',
+          validation: 'success_msg',
+          targetField: 'success_message',
+        });
+        return;
+      }
+
       // 14-N. DECLARATIVE VISIBILITY (no leading verb — common in "Expected Result" cells)
       //   '"Welcome Back!" heading and login details text are visible'
       //   'The success banner is displayed'
