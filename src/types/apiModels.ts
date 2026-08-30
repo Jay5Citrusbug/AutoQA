@@ -29,6 +29,11 @@ export const RunTestRequestSchema = z.object({
     reuseBrowser: z.boolean().default(true),
     /** Lifetime of a cached login session, in minutes. */
     sessionTtlMinutes: z.number().int().min(1).max(240).default(20),
+    /**
+     * Which engine runs the steps. 'auto' uses the deterministic engine first
+     * and hands any step it cannot carry out to the AI agent.
+     */
+    executionMode: z.enum(['deterministic', 'ai', 'auto']).default('auto'),
   }),
 });
 

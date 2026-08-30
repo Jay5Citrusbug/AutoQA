@@ -36,6 +36,8 @@ export default function RunTestPage() {
     headless: true,
     reuseSession: true,
     reuseBrowser: true,
+    // Deterministic first, agent on any step it cannot carry out.
+    executionMode: 'auto' as 'deterministic' | 'ai' | 'auto',
   });
 
   // --- RUNTIME STATE ---
@@ -896,6 +898,62 @@ ${logs}
                     </button>
                   ))}
                 </div>
+              </div>
+
+              {/* ---- EXECUTION MODE SELECTOR ---- */}
+              <div className="border border-zinc-800 bg-[#101524] rounded-2xl p-6 flex flex-col gap-4">
+                <h3 className="text-sm sm:text-base font-extrabold uppercase tracking-wider text-zinc-400 flex items-center gap-2">
+                  <Sparkles className="h-4 w-4 text-amber-400" />
+                  Execution Mode
+                </h3>
+                <div className="flex flex-col gap-2">
+                  {([
+                    {
+                      id: 'auto',
+                      label: 'Auto',
+                      sub: 'Rules first, AI for anything they cannot run',
+                      Icon: Zap,
+                    },
+                    {
+                      id: 'deterministic',
+                      label: 'Deterministic only',
+                      sub: 'No AI, no token cost. Unrecognised steps fail.',
+                      Icon: Terminal,
+                    },
+                    {
+                      id: 'ai',
+                      label: 'AI agent',
+                      sub: 'Every step driven by the agent. Slower and costs tokens.',
+                      Icon: Sparkles,
+                    },
+                  ] as {
+                    id: 'auto' | 'deterministic' | 'ai';
+                    label: string;
+                    sub: string;
+                    Icon: React.ComponentType<{ className?: string }>;
+                  }[]).map((m) => (
+                    <button
+                      key={m.id}
+                      type="button"
+                      onClick={() => setConfig(prev => ({ ...prev, executionMode: m.id }))}
+                      className={`py-3 px-3 rounded-xl border text-left transition-all cursor-pointer flex items-center gap-2 ${
+                        config.executionMode === m.id
+                          ? 'bg-amber-600/20 border-amber-500/50 text-amber-300'
+                          : 'bg-zinc-900/30 border-zinc-800 text-zinc-500 hover:text-zinc-300 hover:border-zinc-700'
+                      }`}
+                    >
+                      <m.Icon className="h-4 w-4 shrink-0" />
+                      <div>
+                        <div className="text-xs sm:text-sm font-bold leading-none">{m.label}</div>
+                        <div className="text-[10px] sm:text-xs mt-0.5 opacity-70">{m.sub}</div>
+                      </div>
+                    </button>
+                  ))}
+                </div>
+                <p className="text-[10px] sm:text-xs text-zinc-500 leading-normal">
+                  AI modes need <code className="font-mono text-zinc-400">ANTHROPIC_API_KEY</code> in
+                  the server environment. Without it, runs fall back to deterministic.
+                </p>
               </div>
 
               {/* ---- DEVICE MODE SELECTOR ---- */}

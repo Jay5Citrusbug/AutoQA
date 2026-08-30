@@ -22,6 +22,7 @@ import { ReportGenerator } from '../reporting/reportGenerator';
 import { PlaywrightGenerator } from '../generator/playwrightGenerator';
 import { ScriptVerifier } from './scriptVerifier';
 import { logger } from '@/utils/logger';
+import { StepEscalator, type ExecutionMode } from '../ai/stepEscalation';
 import { v4 as uuidv4 } from 'uuid';
 import fs from 'fs';
 import path from 'path';
@@ -311,6 +312,17 @@ export interface RunConfig {
    * instead of launching and closing a browser per test case. Defaults to on.
    */
   reuseBrowser?: boolean;
+  /**
+   * Which engine runs the steps.
+   *
+   * 'deterministic' — the parser/discovery engine only; a step it cannot handle fails.
+   * 'auto'          — deterministic first, agent on any step it could not carry out (default).
+   * 'ai'            — every step goes to the agent.
+   *
+   * 'auto' is the default because the deterministic path is free and fast: the
+   * agent is worth paying for on the steps that need it, not on all of them.
+   */
+  executionMode?: ExecutionMode;
 }
 
 /** A test case as handed to the runner — TestSuite plus its session directives. */
@@ -423,6 +435,16 @@ export class PlaywrightRunner implements IPlaywrightRunner {
     const browser = config?.browser ?? 'chromium';
     const deviceMode = config?.deviceMode ?? 'desktop';
     const maxWorkers = Math.max(1, Math.min(config?.maxWorkers ?? 1, 8));
+
+    // Hybrid execution. Constructed unconditionally but inert unless the mode
+    // allows it AND a key is configured — isEnabled() answers both, so callers
+    // never have to know which of the two is missing.
+    const executionMode: ExecutionMode = config?.executionMode ?? 'auto';
+    this.escalator = new StepEscalator({
+      mode: executionMode,
+      outputDir: path.join(process.cwd(), 'test-runs', runId, 'mcp'),
+      isCancelled: () => runRegistry.isAborted(runId),
+    });
 
     // Register this run (preserving an abort that arrived before start) + seed live logs.
     const preAborted = runRegistry.get(runId)?.aborted === true;
@@ -552,6 +574,8 @@ export class PlaywrightRunner implements IPlaywrightRunner {
         indexed.push(...batchResults);
       }
     } finally {
+      // MCP sessions are bound to the browser contexts, so they close first.
+      await this.escalator?.dispose();
       // The shared browser process lives for exactly one run.
       await this._releaseSharedBrowser();
     }
@@ -597,6 +621,28 @@ export class PlaywrightRunner implements IPlaywrightRunner {
       if (sr.networkErrors) context.networkErrors.push(...sr.networkErrors);
     }
     context.networkRequests = allNetworkRequests;
+
+    // What AI execution cost this run. Omitted entirely when nothing escalated,
+    // so a purely deterministic run does not report a cost of zero as though it
+    // had used the agent.
+    const aiSteps = context.stepResults.filter((r) => r.executedBy === 'ai').length;
+    if (aiSteps > 0 && this.escalator) {
+      const usage = this.escalator.getBudget().getUsage();
+      context.aiUsage = {
+        model: this.escalator.getModel(),
+        stepsExecutedByAi: aiSteps,
+        modelTurns: usage.modelTurns,
+        inputTokens: usage.inputTokens,
+        outputTokens: usage.outputTokens,
+        cacheReadTokens: usage.cacheReadTokens,
+        estimatedCostUsd: usage.estimatedCostUsd,
+      };
+      runRegistry.pushLog(
+        runId,
+        `[${new Date().toLocaleTimeString()}] [AI] ${aiSteps} step(s) executed by the agent ` +
+          `across ${usage.modelTurns} model turn(s) — approx $${usage.estimatedCostUsd.toFixed(4)}`,
+      );
+    }
 
     context.testSuiteResults = suiteResults;
     context.status = suiteResults.some((s) => s.status === 'failed') ? 'failed' : 'completed';
@@ -945,6 +991,14 @@ export class PlaywrightRunner implements IPlaywrightRunner {
 
   /** Step evidence from the priming login, keyed by session key (in-process only). */
   private primedEvidence = new Map<string, StepExecutionResult[]>();
+
+  /**
+   * The agent half of hybrid execution for the current run.
+   *
+   * Undefined for a deterministic-only run, so every escalation site must treat
+   * its absence as "there is no fallback" rather than as an error.
+   */
+  private escalator?: StepEscalator;
 
   /** The one browser process shared by every test case in this run (when enabled). */
   private sharedBrowser?: Browser;
@@ -1869,6 +1923,8 @@ export class PlaywrightRunner implements IPlaywrightRunner {
         status: 'passed',
         durationMs: 0,
         logs: stepLogs,
+        // Overwritten only if the step escalates to the agent.
+        executedBy: 'deterministic',
       };
 
       try {
@@ -2126,9 +2182,61 @@ export class PlaywrightRunner implements IPlaywrightRunner {
           }
         }
       } catch (stepErr: any) {
+        const deterministicError = stepErr?.message || 'Error during browser interaction.';
+
+        // ---- Hybrid handoff (A1.4) ----
+        // Every reason the deterministic engine can fail a step arrives here: an
+        // unparsed step, a locator discovery could not resolve, or an action that
+        // did not work. Rather than three separate triggers, the agent is offered
+        // the step at the one point they all reach.
+        const escalated = await this.escalator?.escalate({
+          page,
+          step,
+          stepIndex,
+          deterministicError,
+          testCaseTitle: suiteId,
+          totalSteps: steps.length,
+          previousSteps: stepResults
+            .filter((r) => r.status !== 'skipped')
+            .map((r) => ({ text: r.step.rawText, status: r.status as 'passed' | 'failed' })),
+          log: (m) => stepLogs.push(m),
+        });
+
+        if (escalated) {
+          result.executedBy = 'ai';
+          result.aiHandoffReason = deterministicError;
+          result.aiReasoning = escalated.reasoning;
+          result.aiExpected = escalated.expected;
+          result.aiActual = escalated.actual;
+        }
+
+        if (escalated?.status === 'passed') {
+          // The agent carried out what the deterministic engine could not. The
+          // step passed; the handoff reason stays on the result so a step that
+          // needs AI on every run is visible rather than silently absorbed.
+          result.status = 'passed';
+          logger.info(`[${suiteId}] Step ${stepIndex} recovered by AI`);
+
+          if (screenshotPolicy === 'all') {
+            const shot = await this.screenshotManager
+              .capture(page, evidencePrefix, stepIndex)
+              .catch(() => undefined);
+            if (shot) {
+              result.screenshotPath = shot;
+              stepLogs.push(`Screenshot saved: ${shot}`);
+            }
+          }
+
+          result.durationMs = Date.now() - stepStartTime;
+          stepResults.push(result);
+          continue;
+        }
+
         logger.error(`[${suiteId}] Step ${stepIndex} failed`, stepErr);
         result.status = 'failed';
-        result.error = stepErr?.message || 'Error during browser interaction.';
+        // When the agent also failed, its reasoning is the more useful message:
+        // it says what was on the page, not merely which selector missed.
+        result.error = escalated ? `${escalated.reasoning} (deterministic: ${deterministicError})` : deterministicError;
         stepLogs.push(`ERROR: ${result.error}`);
         suiteFailed = true;
 

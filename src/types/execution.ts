@@ -45,6 +45,25 @@ export interface StepExecutionResult {
    * reader cannot reproduce or trust.
    */
   autoSuppliedValue?: string;
+  /**
+   * Which engine produced this result. Absent on results predating hybrid
+   * execution, so readers must treat undefined as 'deterministic'.
+   */
+  executedBy?: 'deterministic' | 'ai';
+  /**
+   * The agent's own account of its verdict. Present only on AI-executed steps —
+   * a verdict a reader cannot inspect is a verdict they cannot trust.
+   */
+  aiReasoning?: string;
+  /** What the step expected, as the agent understood it. */
+  aiExpected?: string;
+  /** What the agent actually observed. */
+  aiActual?: string;
+  /**
+   * Why this step left the deterministic engine. Kept even when the agent then
+   * passes it, because a step that needs AI every run is a step worth rewriting.
+   */
+  aiHandoffReason?: string;
 }
 
 export interface ConsoleMessageRecord {
@@ -111,6 +130,19 @@ export interface ExecutionContext {
    * the first is raised as a product bug.
    */
   failureClassification?: FailureClassification;
+  /** What AI execution cost this run. Absent when no step escalated. */
+  aiUsage?: AiUsageSummary;
+}
+
+/** Token and cost totals for a run's AI-executed steps. */
+export interface AiUsageSummary {
+  model: string;
+  stepsExecutedByAi: number;
+  modelTurns: number;
+  inputTokens: number;
+  outputTokens: number;
+  cacheReadTokens: number;
+  estimatedCostUsd: number;
 }
 
 /** Verdict on what a failed run actually tells you. See core/reporting/failureClassifier. */

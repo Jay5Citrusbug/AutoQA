@@ -6,6 +6,19 @@ export interface ITestCaseParser {
   parseTestSuites(rawText: string): TestSuite[];
 }
 
+/**
+ * FROZEN GRAMMAR (plan task A1.6).
+ *
+ * This parser is the fast path, not the whole engine. Since hybrid execution
+ * landed, a step it cannot understand is no longer unrunnable — it routes to the
+ * AI agent instead (see core/ai/stepEscalation.ts). Adding rules here to cover
+ * one more phrasing therefore buys very little and costs a permanent increase in
+ * the size of the thing that has to stay correct: every new rule is another way
+ * for an existing test case to be reinterpreted.
+ *
+ * So: fix bugs in these rules freely, but do not add rules for new phrasings.
+ * The tail belongs to the agent.
+ */
 export class TestCaseParser implements ITestCaseParser {
   /**
    * Cleans a step string by removing prefix numbering (e.g. "Step 1: ", "1. ", "1 - ")

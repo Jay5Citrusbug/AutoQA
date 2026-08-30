@@ -4,6 +4,7 @@ import { PlaywrightRunner } from '@/core/execution/playwrightRunner';
 import { TestCaseParser } from '@/core/parser/testCaseParser';
 import { formatBlockingErrors, lintStepsText } from '@/core/parser/stepLinter';
 import { runRegistry } from '@/core/execution/runRegistry';
+import { isAiExecutionAvailable } from '@/core/ai/agentExecutor';
 
 export async function POST(request: NextRequest) {
   try {
@@ -36,20 +37,28 @@ export async function POST(request: NextRequest) {
     const suites = parser.parseTestSuites(stepsText);
 
     // ---- Pre-flight gate ----
-    // A step that cannot be parsed can never execute, and that is knowable the
-    // instant the text arrives. Starting the run anyway means paying for a
-    // browser launch, a login and every preceding step before reporting a fault
-    // that was present before anything started — and reporting it one step at a
-    // time, so a file with four bad steps takes four runs to fix. Everything
-    // wrong is reported together, up front, and the run does not begin.
+    // A step the parser cannot understand can never execute deterministically,
+    // and that is knowable the instant the text arrives. Starting the run anyway
+    // means paying for a browser launch, a login and every preceding step before
+    // reporting a fault that was present before anything started — and reporting
+    // it one step at a time, so a file with four bad steps takes four runs to fix.
+    //
+    // That reasoning holds only while the parser is the sole engine. With the AI
+    // agent available, an unparsed step is no longer unrunnable — it is a step
+    // that routes to the agent instead, which is the whole point of hybrid mode.
+    // So the gate now closes only when nothing else can pick the step up.
     const lint = lintStepsText(stepsText);
-    if (!lint.runnable) {
+    const canEscalate = config.executionMode !== 'deterministic' && isAiExecutionAvailable();
+    if (!lint.runnable && !canEscalate) {
       return NextResponse.json(
         {
           error: 'Test case contains steps that cannot be executed',
           details:
             `${lint.errorCount} step(s) could not be understood, so this run was not started. ` +
-            `Fix them and run again — nothing was executed.`,
+            `Fix them and run again — nothing was executed.` +
+            (config.executionMode === 'deterministic'
+              ? ' Or switch this run to Auto mode, where the AI agent handles steps the parser cannot.'
+              : ' Set ANTHROPIC_API_KEY to let the AI agent handle steps the parser cannot.'),
           blockingSteps: formatBlockingErrors(lint),
           lint,
         },
@@ -118,7 +127,16 @@ export async function POST(request: NextRequest) {
         // so the reader sees what was actually typed or chosen, not just that
         // the step passed.
         autoSuppliedValue: r.autoSuppliedValue,
+        // Which engine ran the step, and — for AI-executed steps — the agent's
+        // own account of its verdict. A verdict the reader cannot inspect is a
+        // verdict they cannot trust.
+        executedBy: r.executedBy,
+        aiReasoning: r.aiReasoning,
+        aiExpected: r.aiExpected,
+        aiActual: r.aiActual,
+        aiHandoffReason: r.aiHandoffReason,
       })),
+      aiUsage: context.aiUsage,
       bugReport: context.bugReport,
       failureClassification: context.failureClassification,
       sessionReuse: context.sessionReuse,
