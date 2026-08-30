@@ -8,9 +8,13 @@
     "start": "next start",
     "lint": "eslint",
     "typecheck": "tsc --noEmit",
-    "test": "playwright test --config=playwright.unit.config.ts"
+    "test": "playwright test --config=playwright.unit.config.ts",
+    "test:integration": "playwright test --config=playwright.integration.config.ts"
   },
   "dependencies": {
+    "@anthropic-ai/sdk": "^0.122.0",
+    "@modelcontextprotocol/sdk": "1.30.0",
+    "@playwright/mcp": "0.0.79",
     "axios": "^1.16.1",
     "lucide-react": "^1.17.0",
     "next": "16.2.6",
@@ -20,7 +24,7 @@
     "zod": "^4.4.3"
   },
   "devDependencies": {
-    "@playwright/test": "^1.60.0",
+    "@playwright/test": "1.60.0",
     "@tailwindcss/postcss": "^4",
     "@types/node": "^20",
     "@types/react": "^19",
