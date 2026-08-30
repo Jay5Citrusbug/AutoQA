@@ -152,7 +152,7 @@ Options (decide at start of phase):
 | 5.1 | **Database** (SQLite via Prisma to start; Postgres-ready): projects, test cases, suites, runs, step results, scripts, artifacts, settings. | `reports/*.json`, `globalThis` state |
 | 5.2 | **Async job model:** `POST /api/runs` returns runId instantly; a worker (BullMQ + Redis, or a simple DB-backed queue to start) executes; global concurrency cap on browser instances. | 10-minute blocking HTTP request |
 | 5.3 | **Live progress via SSE** (`/api/runs/:id/events`) replacing setInterval polling; reconnect-safe. | `activeLogs` on `globalThis` |
-| 5.4 | **Artifact storage:** screenshots/videos/reports served through an API route from a data dir (or S3), with retention policy (e.g., 30 days / last N runs). Fixes the `public/`-at-runtime problem that breaks in `next build`. | writing into `public/` |
+| 5.4 | **Artifact storage:** screenshots/videos/reports served through an API route from a data dir (or Cloudinary), with retention policy (e.g., 30 days / last N runs). Fixes the `public/`-at-runtime problem that breaks in `next build`. | writing into `public/` |
 | 5.5 | **Auth & multi-user:** NextAuth (or SSO) + per-project membership; audit trail of who ran what. | open endpoints |
 | 5.6 | **SSRF guard:** URL allowlist per project; block internal/private address ranges. | arbitrary `goto` |
 | 5.7 | **Scheduling & CI hook:** cron-scheduled regression suites + a CLI/webhook (`POST /api/runs` with API key) so CI pipelines can trigger runs and receive pass/fail. | manual-only runs |

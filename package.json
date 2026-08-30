@@ -9,13 +9,15 @@
     "lint": "eslint",
     "typecheck": "tsc --noEmit",
     "test": "playwright test --config=playwright.unit.config.ts",
-    "test:integration": "playwright test --config=playwright.integration.config.ts"
+    "test:integration": "playwright test --config=playwright.integration.config.ts",
+    "cloudinary:check": "node --env-file=.env scripts/check-cloudinary.mjs"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.122.0",
     "@modelcontextprotocol/sdk": "1.30.0",
     "@playwright/mcp": "0.0.79",
     "axios": "^1.16.1",
+    "cloudinary": "^2.11.0",
     "lucide-react": "^1.17.0",
     "next": "16.2.6",
     "react": "19.2.4",

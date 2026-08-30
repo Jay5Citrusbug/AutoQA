@@ -16,6 +16,8 @@ import { TestCaseParser } from '../parser/testCaseParser';
 import { ElementDiscoveryEngine } from '../discovery/elementDiscovery';
 import { Validator } from '../validation/validator';
 import { ScreenshotManager } from '../evidence/screenshotManager';
+import { uploadFile } from '../storage/cloudinaryStorage';
+import { RemoteArtifact } from '@/lib/report-bug-tracker/types';
 import { DomSnapshotManager } from '../evidence/domSnapshotManager';
 import { LogManager } from '../evidence/logManager';
 import { ReportGenerator } from '../reporting/reportGenerator';
@@ -1505,6 +1507,7 @@ export class PlaywrightRunner implements IPlaywrightRunner {
 
     const settings = fileHelper.getSettings();
     const videoCaptureSetting = settings.videoCapture ?? 'off';
+    const traceCaptureSetting = settings.traceCapture ?? 'retain-on-failure';
     const isHeadless = config?.headless !== undefined ? config.headless : settings.headlessMode;
 
     const pushRealTimeLog = (msg: string) => {
@@ -1520,6 +1523,11 @@ export class PlaywrightRunner implements IPlaywrightRunner {
     let page: Page | undefined;
     let tempVideoPath = '';
     let videoPath = '';
+    let videoSizeBytes: number | undefined;
+    let videoRemote: RemoteArtifact | undefined;
+    let tracePath = '';
+    let traceSizeBytes: number | undefined;
+    let traceRemote: RemoteArtifact | undefined;
     try {
       // One browser process per run by default; this TC gets its own isolated context.
       const acquired = await this._acquireBrowser(runId, browserEngine, isHeadless, config);
@@ -1558,6 +1566,18 @@ export class PlaywrightRunner implements IPlaywrightRunner {
       });
 
       page = await browserContext.newPage();
+
+      // Tracing is started on the context, not the page, so anything the test
+      // opens in a second tab is recorded too. Sources are included because the
+      // generated script is what a reader will want to line up against.
+      if (traceCaptureSetting !== 'off') {
+        await browserContext.tracing.start({
+          screenshots: true,
+          snapshots: true,
+          sources: true,
+          title: `${suite.id} — ${suite.title}`,
+        });
+      }
 
       // Installs a fetch/XHR counter used by waitForPageSettle() to detect
       // in-flight API calls (e.g. after a click triggers a CRUD request).
@@ -1806,6 +1826,52 @@ export class PlaywrightRunner implements IPlaywrightRunner {
         pushRealTimeLog(`Headed mode: pausing for 5 seconds before closing this test case's window...`);
         await page.waitForTimeout(5000).catch(() => {});
       }
+      // Stop tracing before the context closes — after it, the trace is gone.
+      if (browserContext && traceCaptureSetting !== 'off') {
+        try {
+          const traceFailed = stepResults.some((r) => r.status === 'failed');
+
+          if (traceCaptureSetting === 'retain-on-failure' && !traceFailed) {
+            // Stopping without a path discards the recording rather than paying
+            // to write a few megabytes nobody will open.
+            await browserContext.tracing.stop();
+          } else {
+            const traceDir = path.join(process.cwd(), 'public', 'traces');
+            if (!fs.existsSync(traceDir)) {
+              fs.mkdirSync(traceDir, { recursive: true });
+            }
+
+            const traceFileName = `run-${runId}-${suite.id}.zip`;
+            const traceFilePath = path.join(traceDir, traceFileName);
+            await browserContext.tracing.stop({ path: traceFilePath });
+
+            tracePath = `/traces/${traceFileName}`;
+            traceSizeBytes = fs.statSync(traceFilePath).size;
+            pushRealTimeLog(`Trace saved: ${tracePath}`);
+
+            // The hosted Trace Viewer fetches the archive over HTTP, so a trace
+            // that only exists on this machine cannot be opened from anywhere
+            // else. Uploading it is what makes the report's link work.
+            const uploaded = await uploadFile(traceFilePath, {
+              folder: `traces/run-${runId}`,
+              resourceType: 'raw',
+              publicId: `${suite.id}.zip`,
+            });
+            if (uploaded) {
+              traceRemote = {
+                url: uploaded.secureUrl,
+                publicId: uploaded.publicId,
+                sizeBytes: uploaded.bytes,
+              };
+              tracePath = uploaded.secureUrl;
+              pushRealTimeLog(`Trace uploaded to Cloudinary: ${uploaded.secureUrl}`);
+            }
+          }
+        } catch (traceErr) {
+          logger.error(`[${suite.id}] Failed to finalise trace`, traceErr);
+        }
+      }
+
       // Close this suite's context. The browser process itself is closed once at the
       // end of the run when it is shared across test cases.
       if (browserContext) await closeWithTimeout(browserContext);
@@ -1822,7 +1888,26 @@ export class PlaywrightRunner implements IPlaywrightRunner {
             // Copy file to final path
             fs.renameSync(tempVideoPath, finalVideoPath);
             videoPath = `/videos/${finalFileName}`;
+            videoSizeBytes = fs.statSync(finalVideoPath).size;
             pushRealTimeLog(`Video session recording saved: ${videoPath}`);
+
+            // Push the recording to Cloudinary so the report stays watchable
+            // from anywhere. The local copy is kept either way — a failed
+            // upload must not cost the run its only recording.
+            const uploaded = await uploadFile(finalVideoPath, {
+              folder: `videos/run-${runId}`,
+              resourceType: 'video',
+              publicId: suite.id,
+            });
+            if (uploaded) {
+              videoRemote = {
+                url: uploaded.secureUrl,
+                publicId: uploaded.publicId,
+                sizeBytes: uploaded.bytes,
+              };
+              videoPath = uploaded.secureUrl;
+              pushRealTimeLog(`Video uploaded to Cloudinary: ${uploaded.secureUrl}`);
+            }
           }
         } catch (videoErr) {
           logger.error('Failed to process video recording', videoErr);
@@ -1839,6 +1924,11 @@ export class PlaywrightRunner implements IPlaywrightRunner {
       durationMs: Date.now() - suiteStart,
       stepResults,
       videoPath: videoPath || undefined,
+      videoSizeBytes,
+      videoRemote,
+      tracePath: tracePath || undefined,
+      traceSizeBytes,
+      traceRemote,
       networkRequests,
       consoleLogs: suiteConsoleLogs,
       networkErrors: suiteNetworkErrors,
@@ -2173,12 +2263,14 @@ export class PlaywrightRunner implements IPlaywrightRunner {
 
         // Capture success screenshot
         if (screenshotPolicy === 'all') {
-          const screenshotUrl = await this.screenshotManager
-            .capture(page, evidencePrefix, stepIndex)
-            .catch(() => undefined);
-          if (screenshotUrl) {
-            result.screenshotPath = screenshotUrl;
-            stepLogs.push(`Screenshot saved: ${screenshotUrl}`);
+          const shot = await this.screenshotManager
+            .captureDetailed(page, evidencePrefix, stepIndex)
+            .catch(() => null);
+          if (shot) {
+            result.screenshotPath = shot.url;
+            result.screenshotSizeBytes = shot.sizeBytes;
+            result.screenshotRemote = shot.remote;
+            stepLogs.push(`Screenshot saved: ${shot.url}`);
           }
         }
       } catch (stepErr: any) {
@@ -2219,11 +2311,13 @@ export class PlaywrightRunner implements IPlaywrightRunner {
 
           if (screenshotPolicy === 'all') {
             const shot = await this.screenshotManager
-              .capture(page, evidencePrefix, stepIndex)
-              .catch(() => undefined);
+              .captureDetailed(page, evidencePrefix, stepIndex)
+              .catch(() => null);
             if (shot) {
-              result.screenshotPath = shot;
-              stepLogs.push(`Screenshot saved: ${shot}`);
+              result.screenshotPath = shot.url;
+              result.screenshotSizeBytes = shot.sizeBytes;
+              result.screenshotRemote = shot.remote;
+              stepLogs.push(`Screenshot saved: ${shot.url}`);
             }
           }
 
@@ -2247,9 +2341,13 @@ export class PlaywrightRunner implements IPlaywrightRunner {
         // the cause is often below the fold. Captured even under 'on-failure'.
         if (screenshotPolicy !== 'off') {
           const errShot = await this.screenshotManager
-            .capture(page, evidencePrefix, stepIndex, { fullPage: true })
-            .catch(() => undefined);
-          if (errShot) result.screenshotPath = errShot;
+            .captureDetailed(page, evidencePrefix, stepIndex, { fullPage: true })
+            .catch(() => null);
+          if (errShot) {
+            result.screenshotPath = errShot.url;
+            result.screenshotSizeBytes = errShot.sizeBytes;
+            result.screenshotRemote = errShot.remote;
+          }
         }
 
         const domPath = await this.domSnapshotManager

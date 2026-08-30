@@ -188,6 +188,9 @@ export const fileHelper = {
     const defaults = {
       screenshotCapture: 'on-failure',
       videoCapture: 'off',
+      // Traces are the one artifact worth having by default: they cost nothing on
+      // a passing run and are the fastest way to understand a failing one.
+      traceCapture: 'retain-on-failure',
       headlessMode: true,
       defaultTimeout: 30,
       reportFormat: 'both',

@@ -14,6 +14,7 @@ import {
   BugReport
 } from '@/lib/report-bug-tracker';
 import { classifyFailure } from './failureClassifier';
+import { isCloudinaryConfigured, uploadFile, uploadText } from '@/core/storage/cloudinaryStorage';
 
 export interface GenerateOptions {
   /** When true, a drafted bug is actually filed as a Jira issue (Phase 4.4). */
@@ -55,6 +56,108 @@ export class ReportGenerator implements IReportGenerator {
         isMockMode: mock,
       }),
     };
+  }
+
+  /**
+   * Writes the rolled-up log files for a run, and publishes them if Cloudinary
+   * is configured.
+   *
+   * Console output and network traffic only exist in memory while the run is
+   * going, so they are serialised here. They are written to disk first and
+   * uploaded second, deliberately: the report links to these files, and a link
+   * to a file that was never written is a 404 no matter how the run went.
+   */
+  private async publishLogArtifacts(collector: EvidenceCollector, executionId: string): Promise<void> {
+    const folder = `logs/execution-${executionId}`;
+    const localDir = path.join(this.outputDir, 'logs', `execution-${executionId}`);
+
+    /** Writes one log file next to the report and returns what the collector needs. */
+    const write = (fileName: string, content: string) => {
+      const filePath = path.join(localDir, fileName);
+      fileHelper.writeText(filePath, content);
+      return {
+        // Root-relative so the link works from any page in the report, not just
+        // the one that happens to sit at the right depth.
+        filePath: `/reports/logs/execution-${executionId}/${fileName}`,
+        sizeBytes: Buffer.byteLength(content, 'utf-8'),
+      };
+    };
+
+    const consoleLogs = collector.getConsoleLogs();
+    if (consoleLogs.length > 0) {
+      const text = consoleLogs
+        .map((l) => `[${l.timestamp}] [${l.level.toUpperCase()}] ${l.message}`)
+        .join('\n');
+      const written = write('console.log', text);
+
+      const uploaded = isCloudinaryConfigured()
+        ? await uploadText(text, { folder, publicId: 'console.log' })
+        : null;
+
+      collector.attachLogArtifact('console_log', {
+        ...written,
+        remote: uploaded
+          ? { url: uploaded.secureUrl, publicId: uploaded.publicId, sizeBytes: uploaded.bytes }
+          : undefined,
+      });
+    }
+
+    const apiLogs = collector.getAPILogs();
+    if (apiLogs.length > 0) {
+      // A minimal but valid HAR 1.2 log, so the file opens in the usual viewers
+      // rather than being a JSON dump that only this app understands.
+      const har = {
+        log: {
+          version: '1.2',
+          creator: { name: 'AutoQA', version: '1.0' },
+          entries: apiLogs.map((l) => ({
+            startedDateTime: l.requestTime,
+            time: l.duration,
+            request: {
+              method: l.method,
+              url: l.fullUrl,
+              httpVersion: 'HTTP/1.1',
+              headers: Object.entries(l.headers).map(([name, value]) => ({ name, value })),
+              queryString: [],
+              cookies: [],
+              headersSize: -1,
+              bodySize: l.requestSize,
+            },
+            response: {
+              status: l.statusCode,
+              statusText: l.statusText,
+              httpVersion: 'HTTP/1.1',
+              headers: [],
+              cookies: [],
+              content: { size: l.responseSize, mimeType: 'application/json' },
+              redirectURL: '',
+              headersSize: -1,
+              bodySize: l.responseSize,
+            },
+            cache: {},
+            timings: { send: 0, wait: l.duration, receive: 0 },
+          })),
+        },
+      };
+
+      const harJson = JSON.stringify(har, null, 2);
+      const written = write('network.har', harJson);
+
+      const uploaded = isCloudinaryConfigured()
+        ? await uploadText(harJson, {
+            folder,
+            publicId: 'network.har',
+            contentType: 'application/json',
+          })
+        : null;
+
+      collector.attachLogArtifact('har_file', {
+        ...written,
+        remote: uploaded
+          ? { url: uploaded.secureUrl, publicId: uploaded.publicId, sizeBytes: uploaded.bytes }
+          : undefined,
+      });
+    }
   }
 
   public async generate(context: ExecutionContext, options?: GenerateOptions): Promise<ReportPayload> {
@@ -159,6 +262,36 @@ export class ReportGenerator implements IReportGenerator {
       };
     });
 
+    // Register the artifacts the runner captured. Each carries its Cloudinary
+    // copy when the upload succeeded, so the evidence record can say whether the
+    // file is on the CDN or only on this machine.
+    for (const step of context.stepResults) {
+      if (!step.screenshotPath) continue;
+      collector.addScreenshot(
+        step.stepIndex,
+        step.screenshotPath,
+        step.screenshotSizeBytes ?? step.screenshotRemote?.sizeBytes ?? 0,
+        step.screenshotRemote,
+      );
+    }
+
+    const primarySuite = context.testSuiteResults?.[0];
+    if (primarySuite?.videoPath) {
+      collector.captureVideo(
+        primarySuite.videoPath,
+        primarySuite.videoSizeBytes ?? primarySuite.videoRemote?.sizeBytes ?? 0,
+        primarySuite.videoRemote,
+      );
+    }
+
+    if (primarySuite?.tracePath) {
+      collector.captureTrace(
+        primarySuite.tracePath,
+        primarySuite.traceSizeBytes ?? primarySuite.traceRemote?.sizeBytes ?? 0,
+        primarySuite.traceRemote,
+      );
+    }
+
     const testReport: TestReport = {
       id: reportId,
       executionId,
@@ -231,6 +364,7 @@ export class ReportGenerator implements IReportGenerator {
     }
 
     // 4. Generate Premium HTML
+    await this.publishLogArtifacts(collector, executionId);
     const evidenceMetadata = collector.compileEvidenceMetadata();
     const htmlContent = exporter.exportToHtml(
       testReport,
@@ -245,6 +379,18 @@ export class ReportGenerator implements IReportGenerator {
     const htmlPath = path.join(this.outputDir, `${context.runId}.html`);
     fileHelper.writeText(htmlPath, htmlContent);
     logger.info(`Generated Premium HTML report: ${htmlPath}`);
+
+    // Publish the dashboard so links to it survive outside this host. `raw`
+    // keeps the HTML byte-for-byte rather than treating it as media.
+    const uploadedReport = await uploadFile(htmlPath, {
+      folder: 'reports',
+      resourceType: 'raw',
+      publicId: `${context.runId}.html`,
+    });
+    testReport.reportUrl = uploadedReport?.secureUrl ?? `/reports/${context.runId}.html`;
+    if (uploadedReport) {
+      logger.info(`Uploaded report to Cloudinary: ${uploadedReport.secureUrl}`);
+    }
 
     // Build the final Next.js payload structure
     const payload: ReportPayload = {

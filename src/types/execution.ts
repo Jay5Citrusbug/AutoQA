@@ -1,5 +1,6 @@
 import { ParsedStep } from './testCase';
 import { BrowserEngine, DeviceMode } from './mvp';
+import { RemoteArtifact } from '@/lib/report-bug-tracker/types';
 
 export interface DiscoveryMatch {
   selector: string;
@@ -20,6 +21,10 @@ export interface StepExecutionResult {
   status: 'passed' | 'failed' | 'skipped';
   resolvedSelector?: string;
   screenshotPath?: string;
+  /** Actual size of the screenshot file on disk, in bytes. */
+  screenshotSizeBytes?: number;
+  /** Cloudinary copy of the screenshot; absent when the upload was skipped or failed. */
+  screenshotRemote?: RemoteArtifact;
   error?: string;
   durationMs: number;
   logs: string[];
@@ -172,6 +177,16 @@ export interface TestSuiteResult {
   stepResults: StepExecutionResult[];
   generatedScriptPath?: string;
   videoPath?: string;
+  /** Actual size of the recording on disk, in bytes. */
+  videoSizeBytes?: number;
+  /** Cloudinary copy of the session recording; absent when the upload was skipped or failed. */
+  videoRemote?: RemoteArtifact;
+  /** Playwright trace archive (.zip), openable in the Trace Viewer. */
+  tracePath?: string;
+  /** Actual size of the trace archive on disk, in bytes. */
+  traceSizeBytes?: number;
+  /** Cloudinary copy of the trace; what makes the hosted Trace Viewer able to load it. */
+  traceRemote?: RemoteArtifact;
   networkRequests?: NetworkRequestRecord[];
   scriptVerification?: ScriptVerificationResult;
   consoleLogs?: ConsoleMessageRecord[];

@@ -80,6 +80,9 @@ export interface TestReport {
   
   reportJson?: any; // parsed object or JSON string
   reportHtml?: string;
+
+  /** CDN url of the exported dashboard, set once the report is uploaded. */
+  reportUrl?: string;
   
   createdAt?: string; // ISO date string
 }
@@ -126,14 +129,40 @@ export interface BugReport {
   resolvedAt?: string; // ISO date string
 }
 
+/**
+ * A copy of an artifact that was uploaded to Cloudinary. Absent when the run
+ * had no credentials configured, in which case the artifact stays local.
+ */
+export interface RemoteArtifact {
+  /** Cloudinary `secure_url`. */
+  url: string;
+  /** Cloudinary public id, needed to delete or transform the asset later. */
+  publicId: string;
+  /** Size Cloudinary recorded, which supersedes any local estimate. */
+  sizeBytes?: number;
+}
+
+/**
+ * A rolled-up log file that has been written out for a run — where it landed,
+ * how big it is, and its Cloudinary copy when one was made.
+ */
+export interface LogArtifact {
+  filePath: string;
+  sizeBytes: number;
+  remote?: RemoteArtifact;
+}
+
 export interface EvidenceMetadata {
   id: string;
   executionId: string;
-  type: 'video' | 'screenshot' | 'console_log' | 'network_log' | 'har_file';
+  type: 'video' | 'screenshot' | 'console_log' | 'network_log' | 'har_file' | 'trace';
   
   filePath: string;
   fileSizeBytes: number;
-  storageType: 's3' | 'gcs' | 'local';
+  storageType: 'cloudinary' | 'local';
+
+  /** Cloudinary public id, present when the artifact was uploaded to the CDN. */
+  storageId?: string;
   
   publicUrl?: string;
   expirationDate?: string; // ISO date string

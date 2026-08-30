@@ -61,6 +61,7 @@ node_modules/
 /public/generated-tests/
 /public/videos/
 /public/dom-snapshots/
+/public/traces/
 
 # Playwright MCP scratch output (snapshots, console logs)
 .playwright-mcp/

@@ -11,6 +11,7 @@ export default function SettingsPage() {
   const [execSettings, setExecSettings] = useState({
     screenshotCapture: 'on-failure',
     videoCapture: 'off',
+    traceCapture: 'retain-on-failure',
     headlessMode: true,
     defaultTimeout: 30,
     reportFormat: 'both'
@@ -28,6 +29,7 @@ export default function SettingsPage() {
           setExecSettings({
             screenshotCapture: data.screenshotCapture ?? 'on-failure',
             videoCapture: data.videoCapture ?? 'off',
+            traceCapture: data.traceCapture ?? 'retain-on-failure',
             headlessMode: data.headlessMode ?? true,
             defaultTimeout: data.defaultTimeout ?? 30,
             reportFormat: data.reportFormat ?? 'both'
@@ -116,6 +118,24 @@ export default function SettingsPage() {
                 <option value="retain-on-failure">Retain only on failures</option>
                 <option value="on">Record every run (Slower execution)</option>
               </select>
+            </div>
+
+            {/* Traces */}
+            <div className="flex flex-col gap-2.5">
+              <label className="font-bold text-zinc-400">Trace Capture Mode</label>
+              <select
+                value={execSettings.traceCapture}
+                onChange={e => setExecSettings(prev => ({ ...prev, traceCapture: e.target.value }))}
+                className="bg-zinc-950 border border-zinc-800 rounded-xl px-5 py-3.5 text-white focus:outline-none focus:border-purple-500 font-semibold"
+              >
+                <option value="retain-on-failure">Retain only on failures (Default)</option>
+                <option value="on">Record every run (Larger artifacts)</option>
+                <option value="off">Off (Disable completely)</option>
+              </select>
+              <p className="text-xs text-zinc-500">
+                Traces open in the Playwright Trace Viewer with a full timeline, DOM snapshots and
+                network activity. Uploaded traces open in one click from the report.
+              </p>
             </div>
 
             {/* Headless Mode */}

@@ -43,6 +43,11 @@ export class ReportExporter {
     const isPass = report.status === 'passed';
     const statusColor = isPass ? '#10B981' : '#EF4444';
     const statusText = isPass ? '✅ PASSED' : '❌ FAILED';
+
+    // Set once the dashboard has been uploaded to Cloudinary; otherwise the
+    // link points at the copy this server wrote, which is still reachable to
+    // anyone on the same host.
+    const reportUrl = report.reportUrl || `/reports/execution-${report.executionId}.html`;
     
     let bugSection = '';
     if (bug) {
@@ -111,7 +116,7 @@ export class ReportExporter {
           ${bugSection}
 
           <div style="margin-top: 25px; text-align: center;">
-            <a href="https://s3.amazonaws.com/qa-reports-bucket/reports/execution-${report.executionId}.html" 
+            <a href="${reportUrl}" 
                style="background-color: #4F46E5; color: white; padding: 12px 24px; text-decoration: none; border-radius: 6px; font-weight: bold; display: inline-block; font-size: 14px;">
               View Full Test Report Dashboard
             </a>
@@ -295,7 +300,9 @@ export class ReportExporter {
             <div class="ev-name">${ev.filePath.split('/').pop()}</div>
             <div class="ev-size">${(ev.fileSizeBytes / (1024 * 1024)).toFixed(2)} MB | ${ev.storageType.toUpperCase()}</div>
           </div>
-          <a href="${ev.publicUrl || ev.filePath}" target="_blank" class="btn-download">Open</a>
+          <a href="${this.evidenceHref(ev)}" target="_blank" class="btn-download">${
+            ev.type === 'trace' ? 'View Trace' : 'Open'
+          }</a>
         </div>
       `
         )
@@ -1017,10 +1024,31 @@ export class ReportExporter {
 </html>`;
   }
 
+  /**
+   * Where an evidence pill's button should point.
+   *
+   * A trace archive is not something a browser can display — it is a zip that
+   * only means anything inside the Playwright Trace Viewer. The hosted viewer
+   * loads one straight from a url, so an uploaded trace opens in place. A trace
+   * that never left this machine has no url the viewer could fetch, so the link
+   * just downloads it and the reader opens it with `npx playwright show-trace`.
+   */
+  private evidenceHref(ev: EvidenceMetadata): string {
+    const href = ev.publicUrl || ev.filePath;
+
+    if (ev.type === 'trace' && ev.storageType === 'cloudinary') {
+      return `https://trace.playwright.dev/?trace=${encodeURIComponent(href)}`;
+    }
+
+    return href;
+  }
+
   private getEvidenceIcon(type: EvidenceMetadata['type']): string {
     switch (type) {
       case 'video':
         return '📹';
+      case 'trace':
+        return '🧭';
       case 'screenshot':
         return '📸';
       case 'console_log':
